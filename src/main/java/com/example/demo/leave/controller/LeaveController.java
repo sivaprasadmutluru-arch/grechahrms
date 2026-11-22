@@ -1,0 +1,2160 @@
+package com.example.demo.leave.controller;
+
+import com.example.demo.base.repository.CompanyRepository;
+import com.example.demo.common.context.AccessScopeContext;
+import com.example.demo.common.exception.BadRequestException;
+import com.example.demo.common.exception.ResourceNotFoundException;
+import com.example.demo.common.service.FileUploadService;
+import com.example.demo.common.tenant.TenantContext;
+import com.example.demo.common.util.ScopeFilter;
+import com.example.demo.base.entity.Department;
+import com.example.demo.base.repository.DepartmentRepository;
+import com.example.demo.employee.entity.Employee;
+import com.example.demo.employee.repository.EmployeeRepository;
+import com.example.demo.leave.dto.*;
+import com.example.demo.leave.entity.*;
+import com.example.demo.leave.repository.*;
+import com.example.demo.leave.service.LeaveAccrualService;
+import com.example.demo.leave.service.LeavePeriodResolver;
+import com.example.demo.leave.service.LeaveService;
+import com.example.demo.notification.entity.Notification;
+import com.example.demo.notification.service.NotificationService;
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.tags.Tag;
+import lombok.RequiredArgsConstructor;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
+import org.springframework.data.web.PageableDefault;
+import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
+import org.springframework.security.access.AccessDeniedException;
+import org.springframework.security.access.prepost.PreAuthorize;
+import org.springframework.security.core.annotation.AuthenticationPrincipal;
+import org.springframework.transaction.annotation.Transactional;
+import org.springframework.web.bind.annotation.*;
+import org.springframework.web.multipart.MultipartFile;
+import com.example.demo.auth.security.UserPrincipal;
+
+import jakarta.servlet.http.HttpServletResponse;
+import org.apache.poi.xssf.usermodel.XSSFWorkbook;
+import org.apache.poi.ss.usermodel.*;
+import org.apache.poi.ss.util.CellRangeAddress;
+import org.springframework.format.annotation.DateTimeFormat;
+
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.nio.file.StandardCopyOption;
+import java.time.LocalDate;
+import java.time.ZoneId;
+import java.time.format.DateTimeFormatter;
+import java.time.format.DateTimeFormatterBuilder;
+import java.time.format.DateTimeParseException;
+import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.HashMap;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Set;
+import java.util.UUID;
+import java.util.stream.Collectors;
+
+@RestController
+@RequestMapping("/api/leave")
+@RequiredArgsConstructor
+@Tag(name = "Leave")
+public class LeaveController {
+
+    @Value("${app.upload.dir:uploads/leave}")
+    private String uploadDir;
+
+    private final LeaveService leaveService;
+    private final com.example.demo.leave.service.LeaveAttachmentService leaveAttachments;
+    private final LeaveAccrualService leaveAccrualService;
+    private final LeaveAccrualLogRepository accrualLogRepository;
+    private final AvailableLeaveRepository availableLeaveRepository;
+    private final LeaveAllocationRequestRepository allocationRequestRepository;
+    private final RestrictLeaveRepository restrictLeaveRepository;
+    private final LeaveGeneralSettingRepository generalSettingRepository;
+    private final EmployeeRepository employeeRepository;
+    private final LeaveTypeRepository leaveTypeRepository;
+    private final CompanyRepository companyRepository;
+    private final LeaveRequestCommentRepository leaveRequestCommentRepository;
+    private final LeaveRequestFileRepository leaveRequestFileRepository;
+    private final LeaveAllocationRequestCommentRepository allocationRequestCommentRepository;
+    private final LeaveRequestConditionApprovalRepository conditionApprovalRepository;
+    private final EmployeePastLeaveRestrictRepository pastLeaveRestrictRepository;
+    private final CompensatoryLeaveRequestRepository compensatoryLeaveRequestRepository;
+    private final CompensatoryLeaveRequestCommentRepository compensatoryLeaveRequestCommentRepository;
+    private final HolidayRepository holidayRepository;
+    private final HolidayAllocationRepository holidayAllocationRepository;
+    private final DepartmentRepository departmentRepository;
+    private final CompanyLeaveRepository companyLeaveRepository;
+    private final LeaveRequestRepository leaveRequestRepository;
+    private final FileUploadService fileUploadService;
+    private final LeaveAllocationRepository leaveAllocationRepository;
+    private final NotificationService notificationService;
+
+    @GetMapping("/requests")
+    @PreAuthorize("hasAuthority('leave:view')")
+    @Transactional(readOnly = true)
+    @Operation(summary = "List all leave requests (company-scoped)")
+    public ResponseEntity<Page<LeaveRequestDTO>> listRequests(
+            @PageableDefault(size = 20) Pageable pageable,
+            @RequestParam(required = false) Integer year,
+            @RequestParam(required = false) LeaveRequest.LeaveStatus status,
+            @RequestParam(defaultValue = "false") boolean includeCancelled) {
+        return ResponseEntity.ok(leaveService.getAllRequests(pageable, year, status, includeCancelled)
+                .map(r -> LeaveMapper.toDTO(r, leaveService.reviewAllowed(r.getId()))));
+    }
+
+    @DeleteMapping("/requests/{id}")
+    @PreAuthorize("hasAnyRole('SUPER_ADMIN', 'PLATFORM_SUPER_ADMIN')")
+    @Operation(summary = "Permanently delete one leave request")
+    public ResponseEntity<Map<String, Object>> deleteRequest(@PathVariable Long id) {
+        int deleted = leaveService.deleteRequests(List.of(id));
+        return ResponseEntity.ok(Map.of("message", "Leave request deleted", "deleted", deleted));
+    }
+
+    @PostMapping("/requests/bulk-delete")
+    @PreAuthorize("hasAnyRole('SUPER_ADMIN', 'PLATFORM_SUPER_ADMIN')")
+    @Operation(summary = "Permanently delete selected leave requests")
+    public ResponseEntity<Map<String, Object>> bulkDeleteRequests(@RequestBody List<Long> ids) {
+        int deleted = leaveService.deleteRequests(ids);
+        return ResponseEntity.ok(Map.of("message", deleted + " leave request(s) deleted", "deleted", deleted));
+    }
+
+    @GetMapping("/admin/purge-summary")
+    @PreAuthorize("hasAnyRole('SUPER_ADMIN', 'PLATFORM_SUPER_ADMIN')")
+    @Operation(summary = "Preview operational leave data that can be permanently deleted")
+    public ResponseEntity<Map<String, Long>> getPurgeSummary(@RequestParam Long companyId) {
+        return ResponseEntity.ok(leaveService.getPurgeSummary(companyId));
+    }
+
+    @PostMapping("/admin/purge")
+    @PreAuthorize("hasAnyRole('SUPER_ADMIN', 'PLATFORM_SUPER_ADMIN')")
+    @Operation(summary = "Permanently delete all operational leave data for the selected company")
+    public ResponseEntity<Map<String, Object>> purgeLeaveData(
+            @RequestParam Long companyId,
+            @RequestBody Map<String, String> request) {
+        Map<String, Long> deleted = leaveService.purgeOperationalLeaveData(
+                companyId, request == null ? null : request.get("confirmation"));
+        long total = deleted.values().stream().mapToLong(Long::longValue).sum();
+        return ResponseEntity.ok(Map.of(
+                "message", "Operational leave data deleted. Leave types and policy settings were preserved.",
+                "deleted", deleted,
+                "totalDeleted", total));
+    }
+
+
+    @GetMapping("/requests/export")
+    @PreAuthorize("hasAuthority('leave:view')")
+    @Transactional(readOnly = true)
+    @Operation(summary = "Export all accessible leave requests as Excel")
+    public void exportRequests(HttpServletResponse response) throws IOException {
+        List<LeaveRequest> requests = leaveService.getAllRequests(Pageable.unpaged(), null, null, true).getContent();
+
+        response.setContentType("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+        response.setHeader("Content-Disposition", "attachment; filename=leave_requests.xlsx");
+
+        try (XSSFWorkbook workbook = new XSSFWorkbook()) {
+            Sheet sheet = workbook.createSheet("Leave Requests");
+            Row header = sheet.createRow(0);
+            String[] columns = {
+                    "System Record ID", "Employee ID", "Employee", "Department", "Leave Type",
+                    "Start Date", "End Date", "Days", "Duration", "Status", "Reason",
+                    "Rejection Reason", "Approved By", "Applied On"
+            };
+            for (int i = 0; i < columns.length; i++) {
+                header.createCell(i).setCellValue(columns[i]);
+            }
+
+            int rowNumber = 1;
+            for (LeaveRequest request : requests) {
+                Row row = sheet.createRow(rowNumber++);
+                Employee employee = request.getEmployee();
+
+                row.createCell(0).setCellValue(employee != null && employee.getId() != null ? employee.getId() : 0L);
+                row.createCell(1).setCellValue(employee != null && employee.getBadgeId() != null ? employee.getBadgeId() : "");
+                row.createCell(2).setCellValue(employee == null ? "" :
+                        ((employee.getFirstName() != null ? employee.getFirstName() : "") + " " +
+                                (employee.getLastName() != null ? employee.getLastName() : "")).trim());
+                row.createCell(3).setCellValue(employee != null && employee.getDepartment() != null
+                        ? employee.getDepartment().getName() : "");
+                row.createCell(4).setCellValue(request.getLeaveType() != null && request.getLeaveType().getName() != null
+                        ? request.getLeaveType().getName() : "");
+                row.createCell(5).setCellValue(request.getStartDate() != null ? request.getStartDate().toString() : "");
+                row.createCell(6).setCellValue(request.getEndDate() != null ? request.getEndDate().toString() : "");
+                row.createCell(7).setCellValue(request.getRequestedDays() != null ? request.getRequestedDays() : 0.0);
+                row.createCell(8).setCellValue(request.getLeaveDuration() != null ? request.getLeaveDuration().name() : "FULL_DAY");
+                row.createCell(9).setCellValue(request.getStatus() != null ? request.getStatus().name() : "");
+                row.createCell(10).setCellValue(request.getDescription() != null ? request.getDescription() : "");
+                row.createCell(11).setCellValue(request.getRejectReason() != null ? request.getRejectReason() : "");
+                row.createCell(12).setCellValue(request.getApprovedBy() == null ? "" :
+                        ((request.getApprovedBy().getFirstName() != null ? request.getApprovedBy().getFirstName() : "") + " " +
+                                (request.getApprovedBy().getLastName() != null ? request.getApprovedBy().getLastName() : "")).trim());
+                row.createCell(13).setCellValue(request.getCreatedAt() != null ? request.getCreatedAt().toString() : "");
+            }
+
+            for (int i = 0; i < columns.length; i++) {
+                sheet.autoSizeColumn(i);
+            }
+            workbook.write(response.getOutputStream());
+        }
+    }
+
+    @GetMapping("/types")
+    @PreAuthorize("hasAuthority('leave:view')")
+    @Transactional(readOnly = true)
+    @Operation(summary = "Get leave types for company")
+    public ResponseEntity<List<LeaveTypeDTO>> getTypes() {
+        return ResponseEntity.ok(leaveService.getLeaveTypes().stream().map(LeaveMapper::toDTO).toList());
+    }
+
+    @PostMapping("/types")
+    @PreAuthorize("hasAnyRole('PLATFORM_SUPER_ADMIN', 'ENTERPRISE_ADMIN', 'BRANCH_ADMIN', 'HR_MANAGER')")
+    @Operation(summary = "Create a leave type (isOrganizationWide=true requires Head Office access)")
+    public ResponseEntity<LeaveTypeDTO> createLeaveType(@RequestBody LeaveType leaveType) {
+        return ResponseEntity.ok(LeaveMapper.toDTO(leaveService.createLeaveType(leaveType)));
+    }
+
+    @PutMapping("/types/{id}")
+    @PreAuthorize("hasAnyRole('PLATFORM_SUPER_ADMIN', 'ENTERPRISE_ADMIN', 'BRANCH_ADMIN', 'HR_MANAGER')")
+    @Operation(summary = "Update a leave type")
+    public ResponseEntity<LeaveTypeDTO> updateLeaveType(@PathVariable Long id, @RequestBody LeaveType updated) {
+        return ResponseEntity.ok(LeaveMapper.toDTO(leaveService.updateLeaveType(id, updated)));
+    }
+
+    @DeleteMapping("/types/{id}")
+    @PreAuthorize("hasAnyRole('PLATFORM_SUPER_ADMIN', 'ENTERPRISE_ADMIN', 'BRANCH_ADMIN', 'HR_MANAGER')")
+    @Operation(summary = "Delete a leave type")
+    public ResponseEntity<Map<String, String>> deleteLeaveType(@PathVariable Long id) {
+        leaveService.deleteLeaveType(id);
+        return ResponseEntity.ok(Map.of("message", "Leave type deleted"));
+    }
+
+    @PostMapping("/apply")
+    @PreAuthorize("hasAuthority('leave:create')")
+    @Transactional
+    @Operation(summary = "Apply for leave")
+    public ResponseEntity<LeaveRequestDTO> apply(
+            @AuthenticationPrincipal UserPrincipal principal,
+            @RequestBody ApplyLeaveRequest body) {
+        Employee currentEmployee = employeeRepository.findByUserId(principal.getId()).orElse(null);
+        boolean applyingForAnotherEmployee = body.employeeId() != null
+                && (currentEmployee == null || !body.employeeId().equals(currentEmployee.getId()));
+
+        if (applyingForAnotherEmployee) {
+            boolean canApplyForOthers = principal.getAuthorities().stream()
+                    .map(authority -> authority.getAuthority())
+                    .anyMatch(authority -> authority.equals("leave:approve")
+                            || authority.equals("ROLE_PLATFORM_SUPER_ADMIN")
+                            || authority.equals("ROLE_ENTERPRISE_ADMIN")
+                            || authority.equals("ROLE_BRANCH_ADMIN")
+                            || authority.equals("ROLE_HR_MANAGER"));
+            if (!canApplyForOthers) {
+                throw new AccessDeniedException("You are not allowed to apply for leave on behalf of another employee");
+            }
+        }
+
+        Employee targetEmployee = applyingForAnotherEmployee
+                ? employeeRepository.findById(body.employeeId())
+                        .orElseThrow(() -> new ResourceNotFoundException("Employee", body.employeeId()))
+                : currentEmployee;
+        if (targetEmployee == null) {
+            throw new ResourceNotFoundException("Employee record not found for current user");
+        }
+
+        Long targetCompanyId = targetEmployee.getCompany().getId();
+        AccessScopeContext.ScopeData scope = AccessScopeContext.get();
+        if (scope == null || !scope.canAccess(targetCompanyId)) {
+            throw new AccessDeniedException("You cannot apply leave for an employee outside your company access scope");
+        }
+
+        return ResponseEntity.ok(LeaveMapper.toDTO(
+                leaveService.applyLeave(targetEmployee.getId(), body.leaveTypeId(), body.startDate(), body.endDate(),
+                        body.description(), targetCompanyId, body.leaveDuration(), body.attachmentPath())));
+    }
+
+    @PostMapping(value = "/apply-with-certificate", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    @PreAuthorize("hasAuthority('leave:create')")
+    @Transactional
+    @Operation(summary = "Apply for leave with a supporting certificate")
+    public ResponseEntity<LeaveRequestDTO> applyWithCertificate(
+            @AuthenticationPrincipal UserPrincipal principal,
+            @RequestParam(required = false) Long employeeId,
+            @RequestParam Long leaveTypeId,
+            @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate startDate,
+            @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate endDate,
+            @RequestParam(required = false, defaultValue = "FULL_DAY") LeaveRequest.LeaveDuration leaveDuration,
+            @RequestParam(required = false) String description,
+            @RequestParam(required = false) MultipartFile certificate) {
+        if (certificate != null && !certificate.isEmpty() && certificate.getSize() > 10L * 1024 * 1024) {
+            throw new BadRequestException("The sick leave certificate must be 10 MB or smaller.");
+        }
+        String attachmentPath = certificate != null && !certificate.isEmpty()
+                ? fileUploadService.store(certificate, "leave-certificates") : null;
+        try {
+            LeaveRequestDTO request = apply(principal, new ApplyLeaveRequest(employeeId, leaveTypeId, startDate,
+                    endDate, leaveDuration, description, null, attachmentPath)).getBody();
+            LeaveRequestFile file = new LeaveRequestFile();
+            if (attachmentPath != null) {
+                file.setLeaveRequest(leaveService.getRequestById(request.id()));
+                file.setFilePath(attachmentPath);
+                file.setFileName(certificate.getOriginalFilename());
+                leaveRequestFileRepository.save(file);
+            }
+            return ResponseEntity.ok(request);
+        } catch (RuntimeException ex) {
+            if (attachmentPath != null) fileUploadService.delete(attachmentPath);
+            throw ex;
+        }
+    }
+
+    @PostMapping("/requests/{id}/approve")
+    @PreAuthorize("hasAuthority('leave:view') and @leaveService.reviewAllowed(#id)")
+    @Transactional
+    @Operation(summary = "Approve leave request")
+    public ResponseEntity<LeaveRequestDTO> approve(@PathVariable Long id, @AuthenticationPrincipal UserPrincipal principal) {
+        Long approverId = principal != null ? principal.getId() : null;
+        return ResponseEntity.ok(LeaveMapper.toDTO(leaveService.approve(id, approverId)));
+    }
+
+    @PostMapping(value = "/requests/{id}/reject", consumes = {MediaType.APPLICATION_JSON_VALUE})
+    @PreAuthorize("hasAuthority('leave:view') and @leaveService.reviewAllowed(#id)")
+    @Transactional
+    @Operation(summary = "Reject leave request (JSON)")
+    public ResponseEntity<LeaveRequestDTO> rejectJson(@PathVariable Long id,
+                                                   @RequestBody(required = false) RejectLeaveRequest body) {
+        String reason = body != null ? body.reason() : null;
+        return ResponseEntity.ok(LeaveMapper.toDTO(leaveService.reject(id, reason)));
+    }
+
+    @PostMapping(value = "/requests/{id}/reject", consumes = {MediaType.APPLICATION_FORM_URLENCODED_VALUE, MediaType.ALL_VALUE})
+    @PreAuthorize("hasAuthority('leave:view') and @leaveService.reviewAllowed(#id)")
+    @Transactional
+    @Operation(summary = "Reject leave request (Form / Any)")
+    public ResponseEntity<LeaveRequestDTO> rejectForm(@PathVariable Long id,
+                                                   @RequestParam(required = false) String reason,
+                                                   jakarta.servlet.http.HttpServletRequest request) {
+        String finalReason = reason != null ? reason : request.getParameter("reason");
+        return ResponseEntity.ok(LeaveMapper.toDTO(leaveService.reject(id, finalReason)));
+    }
+
+    @PostMapping("/requests/{id}/cancel")
+    @PreAuthorize("hasAuthority('leave:create')")
+    @Transactional
+    @Operation(summary = "Cancel a leave request (employee self-cancel, restores balance if approved)")
+    public ResponseEntity<LeaveRequestDTO> cancel(@PathVariable Long id) {
+        return ResponseEntity.ok(LeaveMapper.toDTO(leaveService.cancel(id)));
+    }
+
+    @GetMapping("/allocations")
+    @PreAuthorize("hasAuthority('leave:view')")
+    @Operation(summary = "List leave allocations (company-scoped)")
+    public ResponseEntity<List<LeaveAllocationDTO>> listAllocations(
+            @RequestParam(required = false) Long employeeId,
+            @RequestParam(required = false) Integer year) {
+        return ResponseEntity.ok(leaveService.getAllocations(employeeId, year).stream()
+                .map(a -> LeaveMapper.toDTO(a, getUsedDays(a)))
+                .toList());
+    }
+
+    @PutMapping("/allocations/{id}")
+    @PreAuthorize("hasAnyRole('PLATFORM_SUPER_ADMIN', 'ENTERPRISE_ADMIN', 'BRANCH_ADMIN', 'HR_MANAGER')")
+    @Transactional
+    @Operation(summary = "Update a leave allocation")
+    public ResponseEntity<LeaveAllocationDTO> updateAllocation(@PathVariable Long id, @RequestBody Map<String, Object> body) {
+        LeaveAllocation la = leaveAllocationRepository.findById(id)
+                .orElseThrow(() -> new ResourceNotFoundException("LeaveAllocation", id));
+        if (body.containsKey("totalLeaveDays")) la.setTotalLeaveDays(((Number) body.get("totalLeaveDays")).doubleValue());
+        if (body.containsKey("availableDays")) la.setAvailableDays(((Number) body.get("availableDays")).doubleValue());
+        if (body.containsKey("carryforwardDays")) la.setCarryforwardDays(((Number) body.get("carryforwardDays")).doubleValue());
+        return ResponseEntity.ok(LeaveMapper.toDTO(leaveAllocationRepository.save(la)));
+    }
+
+    @DeleteMapping("/allocations/{id}")
+    @PreAuthorize("hasAnyRole('PLATFORM_SUPER_ADMIN', 'ENTERPRISE_ADMIN', 'BRANCH_ADMIN', 'HR_MANAGER')")
+    @Operation(summary = "Delete a leave allocation")
+    public ResponseEntity<Map<String, String>> deleteAllocation(@PathVariable Long id) {
+        leaveService.deleteAllocations(List.of(id));
+        return ResponseEntity.ok(Map.of("message", "Leave allocation deleted"));
+    }
+
+    @PostMapping("/allocations/bulk-delete")
+    @PreAuthorize("hasAnyRole('PLATFORM_SUPER_ADMIN', 'ENTERPRISE_ADMIN', 'BRANCH_ADMIN', 'HR_MANAGER')")
+    @Operation(summary = "Delete selected leave allocations")
+    public ResponseEntity<Map<String, Object>> bulkDeleteAllocations(@RequestBody List<Long> ids) {
+        int deleted = leaveService.deleteAllocations(ids);
+        return ResponseEntity.ok(Map.of("message", deleted + " leave allocation(s) deleted", "deleted", deleted));
+    }
+
+    @PostMapping("/allocate")
+    @PreAuthorize("hasAnyRole('PLATFORM_SUPER_ADMIN', 'ENTERPRISE_ADMIN', 'BRANCH_ADMIN', 'HR_MANAGER')")
+    @Operation(summary = "Allocate leave days to employee")
+    public ResponseEntity<Map<String, String>> allocate(@RequestBody AllocateLeaveRequest body) {
+        leaveService.allocateLeave(body.employeeId(), body.leaveTypeId(), body.days(), body.year(), body.companyId());
+        return ResponseEntity.ok(Map.of("message", "Leave allocated successfully"));
+    }
+
+    @PostMapping("/allocate/bulk")
+    @PreAuthorize("hasAnyRole('PLATFORM_SUPER_ADMIN', 'ENTERPRISE_ADMIN', 'BRANCH_ADMIN', 'HR_MANAGER')")
+    @Operation(summary = "Bulk-allocate leave days to all active employees in a company")
+    public ResponseEntity<Map<String, String>> bulkAllocate(@RequestBody BulkAllocateRequest body) {
+        leaveService.bulkAllocate(body.companyId(), body.leaveTypeId(), body.days(), body.year());
+        return ResponseEntity.ok(Map.of("message", "Bulk allocation completed"));
+    }
+
+    @PostMapping("/reset/annual")
+    @PreAuthorize("hasAnyRole('PLATFORM_SUPER_ADMIN', 'ENTERPRISE_ADMIN', 'BRANCH_ADMIN', 'HR_MANAGER')")
+    @Operation(summary = "Run annual leave reset with carry-forward logic for all employees in a company")
+    public ResponseEntity<Map<String, String>> annualReset(@RequestBody AnnualResetRequest body) {
+        leaveService.annualReset(body.companyId(), body.year());
+        return ResponseEntity.ok(Map.of("message", "Annual reset completed for year " + body.year()));
+    }
+
+    @PostMapping("/balance/reconcile")
+    @PreAuthorize("hasAnyRole('PLATFORM_SUPER_ADMIN', 'ENTERPRISE_ADMIN', 'BRANCH_ADMIN', 'HR_MANAGER')")
+    @Transactional
+    @Operation(summary = "One-time reconciliation: restore available_days from leave_allocations for rows corrupted by the old deductBalance logic")
+    public ResponseEntity<Map<String, Object>> reconcileBalance(@RequestParam Long companyId) {
+        int fixed = leaveService.reconcileAvailableDaysFromAllocations(companyId);
+        return ResponseEntity.ok(Map.of("message", "Reconciliation completed", "rowsFixed", fixed));
+    }
+
+    // ─── Leave Balance (AvailableLeave) ──────────────────────────────────────
+
+    @GetMapping("/balance")
+    @PreAuthorize("hasAuthority('leave:view')")
+    @Transactional(readOnly = true)
+    @Operation(summary = "Get leave balance for active employees (company-scoped)")
+    public ResponseEntity<List<AvailableLeaveDTO>> listBalance() {
+        List<AvailableLeave> result = availableLeaveRepository.findAll(activeLeaveBalanceScope());
+        return ResponseEntity.ok(result.stream().map(al -> {
+            double used = getCurrentPeriodUsedDays(al);
+            return LeaveMapper.toDTO(al, used);
+        }).toList());
+    }
+
+    private org.springframework.data.jpa.domain.Specification<AvailableLeave> activeLeaveBalanceScope() {
+        var scope = ScopeFilter.<AvailableLeave>byEmployeeCompany();
+        org.springframework.data.jpa.domain.Specification<AvailableLeave> active =
+                (root, query, cb) -> cb.isTrue(root.get("employee").get("isActive"));
+        return scope == null ? active : scope.and(active);
+    }
+
+    @GetMapping("/balance/employee/{employeeId}")
+    @PreAuthorize("hasAuthority('leave:view')")
+    @Transactional(readOnly = true)
+    @Operation(summary = "Get leave balance for a specific employee")
+    public ResponseEntity<List<AvailableLeaveDTO>> getEmployeeBalance(@PathVariable Long employeeId) {
+        return ResponseEntity.ok(availableLeaveRepository.findByEmployeeId(employeeId).stream().map(al -> {
+            double used = getCurrentPeriodUsedDays(al);
+            return LeaveMapper.toDTO(al, used);
+        }).toList());
+    }
+
+    @PutMapping("/balance/{id}")
+    @PreAuthorize("hasAnyRole('PLATFORM_SUPER_ADMIN', 'ENTERPRISE_ADMIN', 'BRANCH_ADMIN', 'HR_MANAGER')")
+    @Transactional
+    @Operation(summary = "Directly update an employee's leave balance record")
+    public ResponseEntity<AvailableLeaveDTO> updateBalance(@PathVariable Long id, @RequestBody Map<String, Object> body) {
+        AvailableLeave al = availableLeaveRepository.findById(id)
+                .orElseThrow(() -> new ResourceNotFoundException("AvailableLeave", id));
+        if (body.containsKey("availableDays")) al.setAvailableDays(((Number) body.get("availableDays")).doubleValue());
+        if (body.containsKey("carryforwardDays")) al.setCarryforwardDays(((Number) body.get("carryforwardDays")).doubleValue());
+        if (body.containsKey("totalLeaveDays")) al.setTotalLeaveDays(((Number) body.get("totalLeaveDays")).doubleValue());
+        if (body.containsKey("resetDate") && body.get("resetDate") != null)
+            al.setResetDate(LocalDate.parse(body.get("resetDate").toString()));
+        if (body.containsKey("expiredDate"))
+            al.setExpiredDate(body.get("expiredDate") != null ? LocalDate.parse(body.get("expiredDate").toString()) : null);
+        return ResponseEntity.ok(LeaveMapper.toDTO(availableLeaveRepository.save(al)));
+    }
+
+    @DeleteMapping("/balance/{id}")
+    @PreAuthorize("hasAnyRole('PLATFORM_SUPER_ADMIN', 'ENTERPRISE_ADMIN', 'BRANCH_ADMIN', 'HR_MANAGER')")
+    @Operation(summary = "Delete an employee's leave balance record")
+    public ResponseEntity<Map<String, String>> deleteBalance(@PathVariable Long id) {
+        if (!availableLeaveRepository.existsById(id)) {
+            throw new ResourceNotFoundException("AvailableLeave", id);
+        }
+        availableLeaveRepository.deleteById(id);
+        return ResponseEntity.ok(Map.of("message", "Leave balance deleted"));
+    }
+
+    @GetMapping("/balance/export")
+    @PreAuthorize("hasAuthority('leave:view')")
+    @Transactional(readOnly = true)
+    @Operation(summary = "Export leave balances as Excel")
+    public void exportBalance(
+            @RequestParam Long companyId,
+            @RequestParam(required = false) List<Long> employeeIds,
+            @RequestParam(required = false) List<Long> leaveTypeIds,
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate fromDate,
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate toDate,
+            @RequestParam(required = false) Boolean excludeZeroBalance,
+            HttpServletResponse response) throws IOException {
+        var scopeSpec = activeLeaveBalanceScope();
+
+        org.springframework.data.jpa.domain.Specification<AvailableLeave> spec = scopeSpec;
+
+        if (employeeIds != null && !employeeIds.isEmpty()) {
+            org.springframework.data.jpa.domain.Specification<AvailableLeave> empSpec =
+                (root, query, cb) -> root.get("employee").get("id").in(employeeIds);
+            spec = spec != null ? spec.and(empSpec) : empSpec;
+        }
+        if (leaveTypeIds != null && !leaveTypeIds.isEmpty()) {
+            org.springframework.data.jpa.domain.Specification<AvailableLeave> ltSpec =
+                (root, query, cb) -> root.get("leaveType").get("id").in(leaveTypeIds);
+            spec = spec != null ? spec.and(ltSpec) : ltSpec;
+        }
+        if (fromDate != null) {
+            LocalDate fd = fromDate;
+            org.springframework.data.jpa.domain.Specification<AvailableLeave> fromSpec =
+                (root, query, cb) -> cb.greaterThanOrEqualTo(root.get("assignedDate"), fd);
+            spec = spec != null ? spec.and(fromSpec) : fromSpec;
+        }
+        if (toDate != null) {
+            LocalDate td = toDate;
+            org.springframework.data.jpa.domain.Specification<AvailableLeave> toSpec =
+                (root, query, cb) -> cb.lessThanOrEqualTo(root.get("assignedDate"), td);
+            spec = spec != null ? spec.and(toSpec) : toSpec;
+        }
+
+        List<AvailableLeave> records = spec != null
+                ? availableLeaveRepository.findAll(spec)
+                : availableLeaveRepository.findAll();
+
+        // Stable read order: by Employee, then Leave Type — mirrors the grouped UI
+        records.sort(java.util.Comparator
+                .comparing((AvailableLeave al) -> al.getEmployee() != null
+                        && al.getEmployee().getFirstName() != null
+                        ? al.getEmployee().getFirstName() : "",
+                        java.util.Comparator.nullsLast(String::compareToIgnoreCase))
+                .thenComparing(al -> al.getLeaveType() != null
+                        && al.getLeaveType().getName() != null
+                        ? al.getLeaveType().getName() : "",
+                        java.util.Comparator.nullsLast(String::compareToIgnoreCase)));
+
+        final boolean dropZero = Boolean.TRUE.equals(excludeZeroBalance);
+
+        response.setContentType("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+        response.setHeader("Content-Disposition", "attachment; filename=leave_balance.xlsx");
+        try (XSSFWorkbook workbook = new XSSFWorkbook()) {
+            Sheet sheet = workbook.createSheet("Leave Balance");
+            CellStyle headerStyle = workbook.createCellStyle();
+            Font font = workbook.createFont();
+            font.setBold(true);
+            headerStyle.setFont(font);
+            headerStyle.setFillForegroundColor(IndexedColors.GREY_25_PERCENT.getIndex());
+            headerStyle.setFillPattern(FillPatternType.SOLID_FOREGROUND);
+
+            // Column order matches the reference Excel sample exactly:
+            // Employee | Leave Type | Available Days | Carry Forward | Total Days (Available +CF)
+            // | Used Days | Leave Balance | Assigned Date | Reset Date | Expires
+            Row header = sheet.createRow(0);
+            String[] cols = {"Employee", "Leave Type", "Available Days", "Carry Forward",
+                    "Total Days (Available +CF)", "Used Days", "Leave Balance",
+                    "Assigned Date", "Reset Date", "Expires"};
+            for (int i = 0; i < cols.length; i++) {
+                Cell cell = header.createCell(i);
+                cell.setCellValue(cols[i]);
+                cell.setCellStyle(headerStyle);
+            }
+            int rowNum = 1;
+            for (AvailableLeave al : records) {
+                String empName = al.getEmployee() != null
+                        ? (al.getEmployee().getFirstName() != null ? al.getEmployee().getFirstName() : "") + " "
+                          + (al.getEmployee().getLastName() != null ? al.getEmployee().getLastName() : "")
+                        : "";
+                empName = empName.trim();
+                double usedDays = getCurrentPeriodUsedDays(al);
+                double totalDays = al.creditedTotalDays();
+                double leaveBalance = Math.max(totalDays - usedDays, 0.0);
+
+                if (dropZero && leaveBalance <= 0.0) continue;
+
+                Row row = sheet.createRow(rowNum++);
+                row.createCell(0).setCellValue(empName);
+                row.createCell(1).setCellValue(al.getLeaveType() != null ? al.getLeaveType().getName() : "");
+                row.createCell(2).setCellValue(al.getAvailableDays() != null ? al.getAvailableDays() : 0.0);
+                row.createCell(3).setCellValue(al.getCarryforwardDays() != null ? al.getCarryforwardDays() : 0.0);
+                row.createCell(4).setCellValue(totalDays);
+                row.createCell(5).setCellValue(usedDays);
+                row.createCell(6).setCellValue(leaveBalance);
+                row.createCell(7).setCellValue(al.getAssignedDate() != null ? al.getAssignedDate().toString() : "");
+                row.createCell(8).setCellValue(al.getResetDate() != null ? al.getResetDate().toString() : "");
+                row.createCell(9).setCellValue(al.getExpiredDate() != null ? al.getExpiredDate().toString() : "");
+            }
+            for (int i = 0; i < cols.length; i++) sheet.autoSizeColumn(i);
+            workbook.write(response.getOutputStream());
+        }
+    }
+
+    @PostMapping("/balance/credit")
+    @PreAuthorize("hasAnyRole('PLATFORM_SUPER_ADMIN', 'ENTERPRISE_ADMIN', 'BRANCH_ADMIN', 'HR_MANAGER')")
+    @Transactional
+    @Operation(summary = "Credit leave days to an employee's balance")
+    public ResponseEntity<AvailableLeaveDTO> creditBalance(@RequestBody CreditBalanceRequest body) {
+        AvailableLeave al = availableLeaveRepository.findByEmployeeIdAndLeaveTypeId(body.employeeId(), body.leaveTypeId())
+                .orElseGet(() -> {
+                    AvailableLeave n = new AvailableLeave();
+                    n.setEmployee(employeeRepository.getReferenceById(body.employeeId()));
+                    n.setLeaveType(leaveTypeRepository.getReferenceById(body.leaveTypeId()));
+                    n.setAssignedDate(LocalDate.now());
+                    return n;
+                });
+        al.setAvailableDays(al.getAvailableDays() + body.days());
+        al.setTotalLeaveDays(al.getTotalLeaveDays() + body.days());
+        return ResponseEntity.ok(LeaveMapper.toDTO(availableLeaveRepository.save(al)));
+    }
+
+    // ─── Leave Allocation Requests ────────────────────────────────────────────
+
+    @GetMapping("/allocation-requests")
+    @PreAuthorize("hasAuthority('leave:view')")
+    @Transactional(readOnly = true)
+    @Operation(summary = "List leave allocation requests (company-scoped)")
+    public ResponseEntity<List<LeaveAllocationRequestDTO>> listAllocationRequests(
+            @RequestParam(defaultValue = "false") boolean includeHistory) {
+        // LeaveAllocationRequest reaches company THROUGH employee (it has no direct company field),
+        // so we must use byEmployeeCompany() — byEmployee()/byCompany() would try root.get("company")
+        // and throw "Could not resolve attribute 'company'".
+        var spec = ScopeFilter.<LeaveAllocationRequest>byEmployeeCompany();
+        List<LeaveAllocationRequest> result = spec != null
+                ? allocationRequestRepository.findAll(spec)
+                : allocationRequestRepository.findAll();
+        if (!includeHistory) {
+            result = result.stream().filter(r -> r.getLifecycleStatus() == null
+                    || r.getLifecycleStatus() == LeaveAllocationRequest.LifecycleStatus.ACTIVE).toList();
+        }
+        return ResponseEntity.ok(result.stream().map(LeaveMapper::toDTO).toList());
+    }
+
+    @PostMapping("/allocation-requests")
+    @PreAuthorize("hasAuthority('leave:create')")
+    @Transactional
+    @Operation(summary = "Submit a leave allocation request")
+    public ResponseEntity<LeaveAllocationRequestDTO> createAllocationRequest(@RequestBody LeaveAllocationRequest req) {
+        if (req.getEmployee() != null && req.getEmployee().getId() != null) {
+            req.setEmployee(employeeRepository.getReferenceById(req.getEmployee().getId()));
+        }
+        if (req.getLeaveType() != null && req.getLeaveType().getId() != null) {
+            req.setLeaveType(leaveTypeRepository.getReferenceById(req.getLeaveType().getId()));
+        }
+        req.setRequestedDate(LocalDate.now());
+        req.setStatus(LeaveAllocationRequest.AllocationStatus.REQUESTED);
+        req.setAllocationAction(LeaveAllocationRequest.AllocationAction.GRANT);
+        req.setLifecycleStatus(LeaveAllocationRequest.LifecycleStatus.ACTIVE);
+        return ResponseEntity.ok(LeaveMapper.toDTO(allocationRequestRepository.save(req)));
+    }
+
+    @PostMapping("/allocation-requests/{id}/adjust")
+    @PreAuthorize("hasAuthority('leave:create')")
+    @Transactional
+    @Operation(summary = "Request an auditable amendment or cancellation of an approved leave allocation")
+    public ResponseEntity<LeaveAllocationRequestDTO> requestAllocationAdjustment(
+            @PathVariable Long id, @RequestBody AllocationAdjustmentRequest body) {
+        LeaveAllocationRequest source = allocationRequestRepository.findById(id)
+                .orElseThrow(() -> new ResourceNotFoundException("LeaveAllocationRequest", id));
+        assertAllocationAccess(source);
+        if (source.getStatus() != LeaveAllocationRequest.AllocationStatus.APPROVED
+                || (source.getLifecycleStatus() != null && source.getLifecycleStatus() != LeaveAllocationRequest.LifecycleStatus.ACTIVE)) {
+            throw new BadRequestException("Only an active approved allocation can be amended or cancelled");
+        }
+        if (body == null || body.reason() == null || body.reason().trim().isEmpty()) {
+            throw new BadRequestException("A reason is required for an allocation adjustment");
+        }
+
+        LeaveAllocationRequest adjustment = new LeaveAllocationRequest();
+        adjustment.setEmployee(source.getEmployee());
+        adjustment.setSourceRequest(source);
+        adjustment.setRequestedDate(LocalDate.now());
+        adjustment.setDescription(body.reason().trim());
+        adjustment.setStatus(LeaveAllocationRequest.AllocationStatus.REQUESTED);
+        adjustment.setLifecycleStatus(LeaveAllocationRequest.LifecycleStatus.ACTIVE);
+        if (Boolean.TRUE.equals(body.cancel())) {
+            adjustment.setAllocationAction(LeaveAllocationRequest.AllocationAction.CANCEL);
+            adjustment.setLeaveType(source.getLeaveType());
+            adjustment.setRequestedDays(0d);
+        } else {
+            if (body.requestedDays() == null || body.requestedDays() < 0d) {
+                throw new BadRequestException("Adjusted days must be zero or greater");
+            }
+            if (body.leaveTypeId() == null) throw new BadRequestException("Leave type is required");
+            adjustment.setAllocationAction(LeaveAllocationRequest.AllocationAction.AMEND);
+            adjustment.setLeaveType(leaveTypeRepository.getReferenceById(body.leaveTypeId()));
+            adjustment.setRequestedDays(body.requestedDays());
+        }
+        return ResponseEntity.ok(LeaveMapper.toDTO(allocationRequestRepository.save(adjustment)));
+    }
+
+    @PostMapping("/allocation-requests/{id}/approve")
+    @PreAuthorize("hasAuthority('leave:approve')")
+    @Transactional
+    @Operation(summary = "Approve a leave allocation request")
+    public ResponseEntity<LeaveAllocationRequestDTO> approveAllocationRequest(@PathVariable Long id) {
+        LeaveAllocationRequest req = allocationRequestRepository.findById(id)
+                .orElseThrow(() -> new ResourceNotFoundException("LeaveAllocationRequest", id));
+        assertAllocationAccess(req);
+        if (req.getStatus() != LeaveAllocationRequest.AllocationStatus.REQUESTED) {
+            throw new BadRequestException("Only requested allocations can be approved");
+        }
+        if (req.getAllocationAction() == LeaveAllocationRequest.AllocationAction.AMEND
+                || req.getAllocationAction() == LeaveAllocationRequest.AllocationAction.CANCEL) {
+            approveAllocationAdjustment(req);
+            return ResponseEntity.ok(LeaveMapper.toDTO(allocationRequestRepository.save(req)));
+        }
+        req.setStatus(LeaveAllocationRequest.AllocationStatus.APPROVED);
+        double grantedDays = req.getRequestedDays() == null ? 0d : req.getRequestedDays();
+        applyAllocationDelta(req.getEmployee(), req.getLeaveType(), grantedDays);
+        req.setAppliedDays(grantedDays);
+        return ResponseEntity.ok(LeaveMapper.toDTO(allocationRequestRepository.save(req)));
+    }
+
+    @PostMapping("/allocation-requests/{id}/cancel")
+    @PreAuthorize("hasAuthority('leave:approve') or hasAuthority('leave:create')")
+    @Transactional
+    @Operation(summary = "Cancel a leave allocation request (direct cancel, restores balance if approved)")
+    public ResponseEntity<LeaveAllocationRequestDTO> cancelAllocationRequest(@PathVariable Long id) {
+        LeaveAllocationRequest req = allocationRequestRepository.findById(id)
+                .orElseThrow(() -> new ResourceNotFoundException("LeaveAllocationRequest", id));
+        assertAllocationAccess(req);
+        if (req.getStatus() == LeaveAllocationRequest.AllocationStatus.CANCELLED) {
+            throw new BadRequestException("Leave allocation request is already cancelled");
+        }
+        if (req.getStatus() == LeaveAllocationRequest.AllocationStatus.APPROVED) {
+            double days = req.getAppliedDays() != null ? req.getAppliedDays()
+                    : (req.getRequestedDays() != null ? req.getRequestedDays() : 0.0);
+            if (days > 0d) {
+                applyAllocationDelta(req.getEmployee(), req.getLeaveType(), -days);
+            }
+        }
+        req.setStatus(LeaveAllocationRequest.AllocationStatus.CANCELLED);
+        req.setLifecycleStatus(LeaveAllocationRequest.LifecycleStatus.CANCELLED);
+        LeaveAllocationRequest saved = allocationRequestRepository.save(req);
+        return ResponseEntity.ok(LeaveMapper.toDTO(saved));
+    }
+
+    @PostMapping(value = "/allocation-requests/{id}/reject", consumes = {MediaType.APPLICATION_JSON_VALUE})
+    @PreAuthorize("hasAuthority('leave:approve')")
+    @Transactional
+    @Operation(summary = "Reject a leave allocation request (JSON)")
+    public ResponseEntity<LeaveAllocationRequestDTO> rejectAllocationRequestJson(
+            @PathVariable Long id,
+            @RequestBody(required = false) RejectLeaveRequest body) {
+        return doRejectAllocation(id, body != null ? body.reason() : null);
+    }
+
+    @PostMapping(value = "/allocation-requests/{id}/reject", consumes = {MediaType.APPLICATION_FORM_URLENCODED_VALUE, MediaType.ALL_VALUE})
+    @PreAuthorize("hasAuthority('leave:approve')")
+    @Transactional
+    @Operation(summary = "Reject a leave allocation request (Form / Any)")
+    public ResponseEntity<LeaveAllocationRequestDTO> rejectAllocationRequestForm(
+            @PathVariable Long id,
+            @RequestParam(required = false) String reason,
+            jakarta.servlet.http.HttpServletRequest request) {
+        String finalReason = reason != null ? reason : request.getParameter("reason");
+        return doRejectAllocation(id, finalReason);
+    }
+
+    private ResponseEntity<LeaveAllocationRequestDTO> doRejectAllocation(Long id, String reason) {
+        LeaveAllocationRequest req = allocationRequestRepository.findById(id)
+                .orElseThrow(() -> new ResourceNotFoundException("LeaveAllocationRequest", id));
+        assertAllocationAccess(req);
+        if (req.getStatus() != LeaveAllocationRequest.AllocationStatus.REQUESTED) {
+            throw new BadRequestException("Only requested allocations can be rejected");
+        }
+        req.setStatus(LeaveAllocationRequest.AllocationStatus.REJECTED);
+        req.setRejectReason(reason);
+        return ResponseEntity.ok(LeaveMapper.toDTO(allocationRequestRepository.save(req)));
+    }
+
+    /** Applies an approved amendment/cancellation atomically and preserves its source record. */
+    private void approveAllocationAdjustment(LeaveAllocationRequest adjustment) {
+        LeaveAllocationRequest source = adjustment.getSourceRequest();
+        if (source == null || source.getStatus() != LeaveAllocationRequest.AllocationStatus.APPROVED
+                || (source.getLifecycleStatus() != null && source.getLifecycleStatus() != LeaveAllocationRequest.LifecycleStatus.ACTIVE)) {
+            throw new BadRequestException("The original allocation is no longer available for adjustment");
+        }
+        double sourceDays = source.getAppliedDays() != null ? source.getAppliedDays()
+                : (source.getRequestedDays() == null ? 0d : source.getRequestedDays());
+        double replacementDays = adjustment.getAllocationAction() == LeaveAllocationRequest.AllocationAction.CANCEL
+                ? 0d : adjustment.getRequestedDays();
+
+        // Reversal happens first. A used portion cannot be silently removed: the request
+        // remains pending until HR submits a valid adjustment for the remaining balance.
+        applyAllocationDelta(source.getEmployee(), source.getLeaveType(), -sourceDays);
+        if (replacementDays > 0d) {
+            applyAllocationDelta(adjustment.getEmployee(), adjustment.getLeaveType(), replacementDays);
+        }
+        if (adjustment.getAllocationAction() == LeaveAllocationRequest.AllocationAction.CANCEL) {
+            source.setStatus(LeaveAllocationRequest.AllocationStatus.CANCELLED);
+            source.setLifecycleStatus(LeaveAllocationRequest.LifecycleStatus.CANCELLED);
+            adjustment.setStatus(LeaveAllocationRequest.AllocationStatus.CANCELLED);
+            adjustment.setLifecycleStatus(LeaveAllocationRequest.LifecycleStatus.CANCELLED);
+        } else {
+            source.setLifecycleStatus(LeaveAllocationRequest.LifecycleStatus.SUPERSEDED);
+            adjustment.setStatus(LeaveAllocationRequest.AllocationStatus.APPROVED);
+        }
+        allocationRequestRepository.save(source);
+        adjustment.setAppliedDays(replacementDays);
+    }
+
+    private void applyAllocationDelta(Employee employee, LeaveType leaveType, double delta) {
+        AvailableLeave balance = availableLeaveRepository
+                .findByEmployeeIdAndLeaveTypeId(employee.getId(), leaveType.getId())
+                .orElseGet(() -> {
+                    AvailableLeave created = new AvailableLeave();
+                    created.setEmployee(employee);
+                    created.setLeaveType(leaveType);
+                    created.setAssignedDate(LocalDate.now());
+                    created.setAvailableDays(0d);
+                    created.setTotalLeaveDays(0d);
+                    return created;
+                });
+        double available = balance.getAvailableDays() == null ? 0d : balance.getAvailableDays();
+        if (available + delta < -0.00001d) {
+            throw new BadRequestException("This allocation cannot be reduced because some of its leave days have already been used");
+        }
+        balance.setAvailableDays(available + delta);
+        availableLeaveRepository.save(balance);
+    }
+
+    private void assertAllocationAccess(LeaveAllocationRequest request) {
+        AccessScopeContext.ScopeData scope = AccessScopeContext.get();
+        Long companyId = request.getEmployee() != null && request.getEmployee().getCompany() != null
+                ? request.getEmployee().getCompany().getId() : null;
+        if (scope != null && companyId != null && !scope.canAccess(companyId)) {
+            throw new AccessDeniedException("You do not have access to this leave allocation");
+        }
+    }
+
+    public record AllocationAdjustmentRequest(Long leaveTypeId, Double requestedDays, Boolean cancel, String reason) {}
+
+    // ─── Leave Restrictions ───────────────────────────────────────────────────
+
+    @GetMapping("/restrictions")
+    @PreAuthorize("hasAuthority('leave:view')")
+    @Transactional(readOnly = true)
+    @Operation(summary = "List leave restrictions (company-scoped)")
+    public ResponseEntity<List<LeaveRestrictionDTO>> listRestrictions() {
+        var spec = ScopeFilter.<RestrictLeave>byCompany();
+        List<RestrictLeave> result = spec != null
+                ? restrictLeaveRepository.findAll(spec)
+                : restrictLeaveRepository.findAll();
+        return ResponseEntity.ok(result.stream().map(LeaveMapper::toDTO).toList());
+    }
+
+    @PostMapping("/restrictions")
+    @PreAuthorize("hasAnyRole('PLATFORM_SUPER_ADMIN', 'ENTERPRISE_ADMIN', 'BRANCH_ADMIN', 'HR_MANAGER')")
+    @Transactional
+    @Operation(summary = "Create a leave restriction")
+    public ResponseEntity<RestrictLeave> createRestriction(@RequestBody RestrictLeave restriction) {
+        if (restriction.getCompany() != null && restriction.getCompany().getId() != null) {
+            restriction.setCompany(companyRepository.getReferenceById(restriction.getCompany().getId()));
+        }
+        return ResponseEntity.ok(restrictLeaveRepository.save(restriction));
+    }
+
+    @PutMapping("/restrictions/{id}")
+    @PreAuthorize("hasAnyRole('PLATFORM_SUPER_ADMIN', 'ENTERPRISE_ADMIN', 'BRANCH_ADMIN', 'HR_MANAGER')")
+    @Transactional
+    @Operation(summary = "Update a leave restriction")
+    public ResponseEntity<RestrictLeave> updateRestriction(@PathVariable Long id, @RequestBody RestrictLeave updated) {
+        RestrictLeave r = restrictLeaveRepository.findById(id)
+                .orElseThrow(() -> new ResourceNotFoundException("RestrictLeave", id));
+        r.setTitle(updated.getTitle());
+        r.setStartDate(updated.getStartDate());
+        r.setEndDate(updated.getEndDate());
+        r.setDescription(updated.getDescription());
+        r.setDepartment(updated.getDepartment());
+        return ResponseEntity.ok(restrictLeaveRepository.save(r));
+    }
+
+    @DeleteMapping("/restrictions/{id}")
+    @PreAuthorize("hasAnyRole('PLATFORM_SUPER_ADMIN', 'ENTERPRISE_ADMIN', 'BRANCH_ADMIN', 'HR_MANAGER')")
+    @Operation(summary = "Delete a leave restriction")
+    public ResponseEntity<Map<String, String>> deleteRestriction(@PathVariable Long id) {
+        restrictLeaveRepository.deleteById(id);
+        return ResponseEntity.ok(Map.of("message", "Restriction deleted"));
+    }
+
+    // ─── Leave Request Comments ───────────────────────────────────────────────
+
+    @GetMapping("/requests/{requestId}/comments")
+    @PreAuthorize("hasAuthority('leave:view')")
+    @Transactional(readOnly = true)
+    @Operation(summary = "Get comments on a leave request")
+    public ResponseEntity<List<LeaveRequestComment>> getLeaveRequestComments(@PathVariable Long requestId) {
+        return ResponseEntity.ok(leaveRequestCommentRepository.findByLeaveRequestId(requestId));
+    }
+
+    @PostMapping("/requests/{requestId}/comments")
+    @PreAuthorize("hasAuthority('leave:create')")
+    @Transactional
+    @Operation(summary = "Add a comment to a leave request")
+    public ResponseEntity<LeaveRequestComment> addLeaveRequestComment(
+            @PathVariable Long requestId, @RequestBody LeaveRequestComment comment) {
+        comment.setLeaveRequest(leaveService.getRequestById(requestId));
+        if (comment.getEmployee() != null && comment.getEmployee().getId() != null) {
+            comment.setEmployee(employeeRepository.getReferenceById(comment.getEmployee().getId()));
+        }
+        return ResponseEntity.ok(leaveRequestCommentRepository.save(comment));
+    }
+
+    @DeleteMapping("/requests/comments/{id}")
+    @PreAuthorize("hasAuthority('leave:delete')")
+    @Operation(summary = "Delete a leave request comment")
+    public ResponseEntity<Void> deleteLeaveRequestComment(@PathVariable Long id) {
+        leaveRequestCommentRepository.deleteById(id);
+        return ResponseEntity.noContent().build();
+    }
+
+    // ─── Leave Request Files ──────────────────────────────────────────────────
+
+    @GetMapping("/requests/{requestId}/files")
+    @PreAuthorize("hasAuthority('leave:view')")
+    @Transactional(readOnly = true)
+    @Operation(summary = "List files attached to a leave request")
+    public ResponseEntity<List<LeaveRequestFile>> getLeaveRequestFiles(@PathVariable Long requestId) {
+        leaveAttachments.requireRead(requestId);
+        return ResponseEntity.ok(leaveRequestFileRepository.findByLeaveRequestId(requestId));
+    }
+
+    @PostMapping("/requests/{requestId}/files")
+    @PreAuthorize("hasAuthority('leave:create')")
+    @Transactional
+    @Operation(summary = "Attach a file reference to a leave request")
+    public ResponseEntity<LeaveRequestFile> addLeaveRequestFile(
+            @PathVariable Long requestId, @RequestBody LeaveRequestFile file) {
+        file.setLeaveRequest(leaveService.getRequestById(requestId));
+        return ResponseEntity.ok(leaveRequestFileRepository.save(file));
+    }
+
+    @PostMapping("/requests/{requestId}/files/upload")
+    @PreAuthorize("hasAuthority('leave:create')")
+    @Transactional
+    @Operation(summary = "Upload a file and attach it to a leave request")
+    public ResponseEntity<LeaveRequestFile> uploadLeaveRequestFile(
+            @PathVariable Long requestId,
+            @RequestParam("file") MultipartFile file) throws IOException {
+        Path dir = Paths.get(uploadDir);
+        Files.createDirectories(dir);
+        String storedName = UUID.randomUUID() + "_" + file.getOriginalFilename();
+        Path dest = dir.resolve(storedName);
+        Files.copy(file.getInputStream(), dest, StandardCopyOption.REPLACE_EXISTING);
+
+        LeaveRequestFile lrf = new LeaveRequestFile();
+        lrf.setLeaveRequest(leaveService.getRequestById(requestId));
+        lrf.setFilePath(dest.toString());
+        lrf.setFileName(file.getOriginalFilename());
+        return ResponseEntity.ok(leaveRequestFileRepository.save(lrf));
+    }
+
+    @DeleteMapping("/requests/files/{id}")
+    @PreAuthorize("hasAuthority('leave:delete')")
+    @Operation(summary = "Remove a file attachment from a leave request")
+    public ResponseEntity<Void> deleteLeaveRequestFile(@PathVariable Long id) {
+        leaveRequestFileRepository.deleteById(id);
+        return ResponseEntity.noContent().build();
+    }
+
+    // ─── Allocation Request Comments ──────────────────────────────────────────
+
+    @GetMapping("/allocation-requests/{requestId}/comments")
+    @PreAuthorize("hasAuthority('leave:view')")
+    @Transactional(readOnly = true)
+    @Operation(summary = "Get comments on a leave allocation request")
+    public ResponseEntity<List<LeaveAllocationRequestComment>> getAllocationRequestComments(@PathVariable Long requestId) {
+        return ResponseEntity.ok(allocationRequestCommentRepository.findByAllocationRequestId(requestId));
+    }
+
+    @PostMapping("/allocation-requests/{requestId}/comments")
+    @PreAuthorize("hasAuthority('leave:create')")
+    @Transactional
+    @Operation(summary = "Add a comment to a leave allocation request")
+    public ResponseEntity<LeaveAllocationRequestComment> addAllocationRequestComment(
+            @PathVariable Long requestId, @RequestBody LeaveAllocationRequestComment comment) {
+        comment.setAllocationRequest(allocationRequestRepository.findById(requestId)
+                .orElseThrow(() -> new ResourceNotFoundException("LeaveAllocationRequest", requestId)));
+        if (comment.getEmployee() != null && comment.getEmployee().getId() != null) {
+            comment.setEmployee(employeeRepository.getReferenceById(comment.getEmployee().getId()));
+        }
+        return ResponseEntity.ok(allocationRequestCommentRepository.save(comment));
+    }
+
+    // ─── Leave Request Condition Approvals ────────────────────────────────────
+
+    @GetMapping("/requests/{requestId}/condition-approvals")
+    @PreAuthorize("hasAuthority('leave:view')")
+    @Transactional(readOnly = true)
+    @Operation(summary = "Get multi-step condition approvals for a leave request")
+    public ResponseEntity<List<LeaveRequestConditionApproval>> getConditionApprovals(@PathVariable Long requestId) {
+        return ResponseEntity.ok(conditionApprovalRepository.findByLeaveRequestIdOrderBySequenceAsc(requestId));
+    }
+
+    @PostMapping("/requests/{requestId}/condition-approvals")
+    @PreAuthorize("hasAnyRole('PLATFORM_SUPER_ADMIN', 'ENTERPRISE_ADMIN', 'BRANCH_ADMIN', 'HR_MANAGER')")
+    @Transactional
+    @Operation(summary = "Add a condition approver to a leave request")
+    public ResponseEntity<LeaveRequestConditionApproval> addConditionApproval(
+            @PathVariable Long requestId, @RequestBody LeaveRequestConditionApproval approval) {
+        approval.setLeaveRequest(leaveService.getRequestById(requestId));
+        if (approval.getManager() != null && approval.getManager().getId() != null) {
+            approval.setManager(employeeRepository.getReferenceById(approval.getManager().getId()));
+        }
+        return ResponseEntity.ok(conditionApprovalRepository.save(approval));
+    }
+
+    @PostMapping("/requests/condition-approvals/{id}/approve")
+    @PreAuthorize("hasAuthority('leave:approve')")
+    @Transactional
+    @Operation(summary = "Mark a condition approval step as approved")
+    public ResponseEntity<LeaveRequestConditionApproval> approveConditionStep(@PathVariable Long id) {
+        LeaveRequestConditionApproval step = conditionApprovalRepository.findById(id)
+                .orElseThrow(() -> new ResourceNotFoundException("LeaveRequestConditionApproval", id));
+        step.setIsApproved(true);
+        step.setIsRejected(false);
+        return ResponseEntity.ok(conditionApprovalRepository.save(step));
+    }
+
+    @PostMapping("/requests/condition-approvals/{id}/reject")
+    @PreAuthorize("hasAuthority('leave:approve')")
+    @Transactional
+    @Operation(summary = "Mark a condition approval step as rejected")
+    public ResponseEntity<LeaveRequestConditionApproval> rejectConditionStep(@PathVariable Long id) {
+        LeaveRequestConditionApproval step = conditionApprovalRepository.findById(id)
+                .orElseThrow(() -> new ResourceNotFoundException("LeaveRequestConditionApproval", id));
+        step.setIsRejected(true);
+        step.setIsApproved(false);
+        return ResponseEntity.ok(conditionApprovalRepository.save(step));
+    }
+
+    // ─── Employee Past Leave Restrict ─────────────────────────────────────────
+
+    @GetMapping("/past-leave-restrict")
+    @PreAuthorize("hasAuthority('leave:view')")
+    @Transactional(readOnly = true)
+    @Operation(summary = "Get past leave restriction setting for company")
+    public ResponseEntity<EmployeePastLeaveRestrict> getPastLeaveRestrict(@RequestParam Long companyId) {
+        return pastLeaveRestrictRepository.findByCompanyId(companyId)
+                .map(ResponseEntity::ok)
+                .orElse(ResponseEntity.notFound().build());
+    }
+
+    @PutMapping("/past-leave-restrict")
+    @PreAuthorize("hasAnyRole('PLATFORM_SUPER_ADMIN', 'ENTERPRISE_ADMIN', 'BRANCH_ADMIN', 'HR_MANAGER')")
+    @Transactional
+    @Operation(summary = "Upsert past leave restriction setting")
+    public ResponseEntity<EmployeePastLeaveRestrict> upsertPastLeaveRestrict(
+            @RequestParam Long companyId, @RequestBody EmployeePastLeaveRestrict body) {
+        EmployeePastLeaveRestrict r = pastLeaveRestrictRepository.findByCompanyId(companyId)
+                .orElseGet(() -> {
+                    EmployeePastLeaveRestrict n = new EmployeePastLeaveRestrict();
+                    n.setCompany(companyRepository.getReferenceById(companyId));
+                    return n;
+                });
+        r.setEnabled(body.getEnabled());
+        return ResponseEntity.ok(pastLeaveRestrictRepository.save(r));
+    }
+
+    // ─── Compensatory Leave Requests ──────────────────────────────────────────
+
+    @GetMapping("/compensatory-requests")
+    @PreAuthorize("isAuthenticated()")
+    @Transactional(readOnly = true)
+    public ResponseEntity<List<CompensatoryLeaveRequestDTO>> listCompensatoryRequests(
+            @RequestParam(required = false) Long employeeId,
+            @RequestParam(required = false) CompensatoryLeaveRequest.CompensatoryLeaveStatus status) {
+        List<CompensatoryLeaveRequest> result;
+        if (employeeId != null) {
+            result = compensatoryLeaveRequestRepository.findByEmployeeId(employeeId);
+        } else if (status != null) {
+            result = compensatoryLeaveRequestRepository.findByStatus(status);
+        } else {
+            result = compensatoryLeaveRequestRepository.findAll();
+        }
+        return ResponseEntity.ok(result.stream().map(LeaveMapper::toDTO).toList());
+    }
+
+    @PostMapping("/compensatory-requests")
+    @PreAuthorize("isAuthenticated()")
+    @Transactional
+    public ResponseEntity<CompensatoryLeaveRequestDTO> createCompensatoryRequest(
+            @RequestBody CompensatoryLeaveRequest request) {
+        request.setStatus(CompensatoryLeaveRequest.CompensatoryLeaveStatus.REQUESTED);
+        return ResponseEntity.ok(LeaveMapper.toDTO(compensatoryLeaveRequestRepository.save(request)));
+    }
+
+    @PutMapping("/compensatory-requests/{id}/approve")
+    @PreAuthorize("hasAnyRole('PLATFORM_SUPER_ADMIN','ENTERPRISE_ADMIN','BRANCH_ADMIN','HR_MANAGER')")
+    @Transactional
+    public ResponseEntity<CompensatoryLeaveRequestDTO> approveCompensatoryRequest(@PathVariable Long id) {
+        CompensatoryLeaveRequest req = compensatoryLeaveRequestRepository.findById(id)
+                .orElseThrow(() -> new ResourceNotFoundException("CompensatoryLeaveRequest", id));
+        req.setStatus(CompensatoryLeaveRequest.CompensatoryLeaveStatus.APPROVED);
+        return ResponseEntity.ok(LeaveMapper.toDTO(compensatoryLeaveRequestRepository.save(req)));
+    }
+
+    @PutMapping("/compensatory-requests/{id}/reject")
+    @PreAuthorize("hasAnyRole('PLATFORM_SUPER_ADMIN','ENTERPRISE_ADMIN','BRANCH_ADMIN','HR_MANAGER')")
+    @Transactional
+    public ResponseEntity<CompensatoryLeaveRequestDTO> rejectCompensatoryRequest(
+            @PathVariable Long id, @RequestBody(required = false) RejectLeaveRequest body) {
+        CompensatoryLeaveRequest req = compensatoryLeaveRequestRepository.findById(id)
+                .orElseThrow(() -> new ResourceNotFoundException("CompensatoryLeaveRequest", id));
+        req.setStatus(CompensatoryLeaveRequest.CompensatoryLeaveStatus.REJECTED);
+        if (body != null && body.reason() != null) req.setRejectReason(body.reason());
+        return ResponseEntity.ok(LeaveMapper.toDTO(compensatoryLeaveRequestRepository.save(req)));
+    }
+
+    @GetMapping("/compensatory-requests/{id}/comments")
+    @PreAuthorize("isAuthenticated()")
+    @Transactional(readOnly = true)
+    public ResponseEntity<List<com.example.demo.leave.entity.CompensatoryLeaveRequestComment>> listCompensatoryComments(@PathVariable Long id) {
+        return ResponseEntity.ok(compensatoryLeaveRequestCommentRepository.findByRequestId(id));
+    }
+
+    @PostMapping("/compensatory-requests/{id}/comments")
+    @PreAuthorize("isAuthenticated()")
+    @Transactional
+    public ResponseEntity<com.example.demo.leave.entity.CompensatoryLeaveRequestComment> addCompensatoryComment(
+            @PathVariable Long id, @RequestBody com.example.demo.leave.entity.CompensatoryLeaveRequestComment comment) {
+        comment.setRequest(compensatoryLeaveRequestRepository.getReferenceById(id));
+        return ResponseEntity.ok(compensatoryLeaveRequestCommentRepository.save(comment));
+    }
+
+    // ─── Leave General Settings ───────────────────────────────────────────────
+
+    @GetMapping("/general-settings")
+    @PreAuthorize("hasAuthority('leave:view')")
+    @Transactional(readOnly = true)
+    @Operation(summary = "Get leave general settings for current company")
+    public ResponseEntity<LeaveGeneralSetting> getGeneralSettings(@RequestParam Long companyId) {
+        return generalSettingRepository.findByCompanyId(companyId)
+                .map(ResponseEntity::ok)
+                .orElse(ResponseEntity.notFound().build());
+    }
+
+    @PutMapping("/general-settings")
+    @PreAuthorize("hasAnyRole('PLATFORM_SUPER_ADMIN', 'ENTERPRISE_ADMIN', 'BRANCH_ADMIN', 'HR_MANAGER')")
+    @Transactional
+    @Operation(summary = "Update leave general settings")
+    public ResponseEntity<LeaveGeneralSetting> updateGeneralSettings(@RequestParam Long companyId,
+                                                                       @RequestBody LeaveGeneralSetting updated) {
+        LeaveGeneralSetting s = generalSettingRepository.findByCompanyId(companyId)
+                .orElseGet(() -> {
+                    LeaveGeneralSetting n = new LeaveGeneralSetting();
+                    n.setCompany(companyRepository.getReferenceById(companyId));
+                    return n;
+                });
+        s.setCompensatoryLeave(updated.getCompensatoryLeave());
+        s.setAnnualCarryforwardEnabled(updated.getAnnualCarryforwardEnabled());
+        s.setMaxCarryforwardDays(updated.getMaxCarryforwardDays());
+        return ResponseEntity.ok(generalSettingRepository.save(s));
+    }
+
+    // ─── Holidays ─────────────────────────────────────────────────────────────
+
+    @GetMapping("/holidays")
+    @PreAuthorize("hasAuthority('leave:view')")
+    @Operation(summary = "List holidays for a company")
+    public ResponseEntity<List<Holiday>> listHolidays(@RequestParam Long companyId) {
+        return ResponseEntity.ok(holidayRepository.findByCompanyId(companyId));
+    }
+
+    @PostMapping("/holidays")
+    @PreAuthorize("hasAnyRole('PLATFORM_SUPER_ADMIN', 'ENTERPRISE_ADMIN', 'BRANCH_ADMIN', 'HR_MANAGER')")
+    @Transactional
+    @Operation(summary = "Create a holiday")
+    public ResponseEntity<Holiday> createHoliday(@RequestBody Holiday body, @RequestParam Long companyId) {
+        if (TenantContext.DEFAULT_TENANT.equals(TenantContext.getTenant())) {
+            throw new BadRequestException("X-Company-Id header is required to create a holiday");
+        }
+        body.setCompany(companyRepository.getReferenceById(companyId));
+        return ResponseEntity.ok(holidayRepository.save(body));
+    }
+
+    @PutMapping("/holidays/{id}")
+    @PreAuthorize("hasAnyRole('PLATFORM_SUPER_ADMIN', 'ENTERPRISE_ADMIN', 'BRANCH_ADMIN', 'HR_MANAGER')")
+    @Transactional
+    @Operation(summary = "Update a holiday")
+    public ResponseEntity<Holiday> updateHoliday(@PathVariable Long id, @RequestBody Holiday body) {
+        Holiday h = holidayRepository.findById(id)
+                .orElseThrow(() -> new ResourceNotFoundException("Holiday", id));
+        h.setName(body.getName());
+        h.setStartDate(body.getStartDate());
+        h.setEndDate(body.getEndDate());
+        h.setRecurring(body.getRecurring());
+        return ResponseEntity.ok(holidayRepository.save(h));
+    }
+
+    @DeleteMapping("/holidays/{id}")
+    @PreAuthorize("hasAnyRole('PLATFORM_SUPER_ADMIN', 'ENTERPRISE_ADMIN', 'BRANCH_ADMIN', 'HR_MANAGER')")
+    @Operation(summary = "Delete a holiday")
+    public ResponseEntity<Map<String, String>> deleteHoliday(@PathVariable Long id) {
+        holidayRepository.deleteById(id);
+        return ResponseEntity.ok(Map.of("message", "Holiday deleted"));
+    }
+
+    // ─── Holiday Allocations ──────────────────────────────────────────────────
+
+    @GetMapping("/holiday-allocations")
+    @PreAuthorize("hasAuthority('leave:view')")
+    @Transactional(readOnly = true)
+    @Operation(summary = "List holiday allocations for a company")
+    public ResponseEntity<List<Map<String, Object>>> listHolidayAllocations(@RequestParam Long companyId) {
+        List<HolidayAllocation> allocations = holidayAllocationRepository.findByCompanyId(companyId);
+        List<Map<String, Object>> result = new ArrayList<>();
+        for (HolidayAllocation ha : allocations) {
+            Map<String, Object> m = new HashMap<>();
+            m.put("id", ha.getId());
+            m.put("holidayId", ha.getHoliday().getId());
+            m.put("holidayName", ha.getHoliday().getName());
+            m.put("startDate", ha.getHoliday().getStartDate());
+            m.put("endDate", ha.getHoliday().getEndDate());
+            if (ha.getEmployee() != null) {
+                m.put("type", "employee");
+                m.put("targetId", ha.getEmployee().getId());
+                m.put("targetName", ha.getEmployee().getFirstName() + " " + (ha.getEmployee().getLastName() != null ? ha.getEmployee().getLastName() : ""));
+            } else if (ha.getDepartment() != null) {
+                m.put("type", "department");
+                m.put("targetId", ha.getDepartment().getId());
+                m.put("targetName", ha.getDepartment().getName());
+            }
+            result.add(m);
+        }
+        return ResponseEntity.ok(result);
+    }
+
+    @PostMapping("/holiday-allocations")
+    @PreAuthorize("hasAnyRole('PLATFORM_SUPER_ADMIN', 'ENTERPRISE_ADMIN', 'BRANCH_ADMIN', 'HR_MANAGER')")
+    @Transactional
+    @Operation(summary = "Allocate a holiday to employees or a department")
+    public ResponseEntity<Map<String, Object>> createHolidayAllocation(@RequestBody Map<String, Object> body,
+                                                                        @RequestParam Long companyId) {
+        Long holidayId = Long.valueOf(body.get("holidayId").toString());
+        AccessScopeContext.ScopeData scope = AccessScopeContext.get();
+        List<Long> accessibleCompanyIds = (scope != null && !scope.hasUnrestrictedAccess())
+                ? scope.getAccessibleCompanyIds()
+                : List.of(companyId);
+        Holiday holiday = holidayRepository.findByIdAndCompanyIdIn(holidayId, accessibleCompanyIds)
+                .orElseThrow(() -> new ResourceNotFoundException("Holiday", holidayId));
+
+        int created = 0;
+        int skipped = 0;
+
+        boolean allEmployees = Boolean.TRUE.equals(body.get("allEmployees"));
+        Object deptIdRaw = body.get("departmentId");
+        Object empIdsRaw = body.get("employeeIds");
+
+        if (allEmployees) {
+            List<Employee> employees = employeeRepository.findByCompanyIdAndIsActiveTrue(companyId);
+            for (Employee emp : employees) {
+                if (!holidayAllocationRepository.existsByHolidayIdAndEmployeeId(holidayId, emp.getId())) {
+                    HolidayAllocation ha = new HolidayAllocation();
+                    ha.setHoliday(holiday);
+                    ha.setEmployee(emp);
+                    ha.setCompany(companyRepository.getReferenceById(companyId));
+                    ha = holidayAllocationRepository.save(ha);
+                    sendHolidayAssignedNotification(emp, holiday, ha);
+                    created++;
+                } else {
+                    skipped++;
+                }
+            }
+            return ResponseEntity.ok(Map.of("created", created, "skipped", skipped));
+        }
+
+        if (deptIdRaw != null) {
+            Long deptId = Long.valueOf(deptIdRaw.toString());
+            Department dept = departmentRepository.findById(deptId)
+                    .orElseThrow(() -> new ResourceNotFoundException("Department", deptId));
+            if (!holidayAllocationRepository.existsByHolidayIdAndDepartmentId(holidayId, deptId)) {
+                HolidayAllocation ha = new HolidayAllocation();
+                ha.setHoliday(holiday);
+                ha.setDepartment(dept);
+                ha.setCompany(companyRepository.getReferenceById(companyId));
+                ha = holidayAllocationRepository.save(ha);
+                for (Employee emp : employeeRepository.findByCompanyIdAndDepartmentIdAndIsActiveTrue(companyId, deptId)) {
+                    sendHolidayAssignedNotification(emp, holiday, ha);
+                }
+                created++;
+            } else {
+                skipped++;
+            }
+        }
+
+        if (empIdsRaw instanceof List<?> empIdList) {
+            for (Object idObj : empIdList) {
+                Long empId = Long.valueOf(idObj.toString());
+                if (!holidayAllocationRepository.existsByHolidayIdAndEmployeeId(holidayId, empId)) {
+                    HolidayAllocation ha = new HolidayAllocation();
+                    ha.setHoliday(holiday);
+                    ha.setEmployee(employeeRepository.getReferenceById(empId));
+                    ha.setCompany(companyRepository.getReferenceById(companyId));
+                    ha = holidayAllocationRepository.save(ha);
+                    sendHolidayAssignedNotification(ha.getEmployee(), holiday, ha);
+                    created++;
+                } else {
+                    skipped++;
+                }
+            }
+        }
+
+        return ResponseEntity.ok(Map.of("created", created, "skipped", skipped));
+    }
+
+    private void sendHolidayAssignedNotification(Employee employee, Holiday holiday, HolidayAllocation allocation) {
+        if (employee == null || employee.getUser() == null) return;
+        notificationService.send(
+                employee.getUser().getId(),
+                "Holiday Assigned",
+                "You have been assigned the holiday '" + holiday.getName() + "' from "
+                        + holiday.getStartDate() + " to " + holiday.getEndDate() + ".",
+                Notification.NotificationType.GENERAL,
+                "HolidayAllocation",
+                allocation.getId(),
+                allocation.getCompany()
+        );
+    }
+
+    @DeleteMapping("/holiday-allocations/{id}")
+    @PreAuthorize("hasAnyRole('PLATFORM_SUPER_ADMIN', 'ENTERPRISE_ADMIN', 'BRANCH_ADMIN', 'HR_MANAGER')")
+    @Operation(summary = "Remove a holiday allocation")
+    public ResponseEntity<Map<String, String>> deleteHolidayAllocation(@PathVariable Long id) {
+        holidayAllocationRepository.deleteById(id);
+        return ResponseEntity.ok(Map.of("message", "Allocation removed"));
+    }
+
+    // ─── Company Leaves ───────────────────────────────────────────────────────
+
+    @GetMapping("/company-leaves")
+    @PreAuthorize("hasAuthority('leave:view')")
+    @Operation(summary = "List company leaves for a company")
+    public ResponseEntity<List<CompanyLeave>> listCompanyLeaves(@RequestParam Long companyId) {
+        return ResponseEntity.ok(companyLeaveRepository.findByCompanyId(companyId));
+    }
+
+    @PostMapping("/company-leaves")
+    @PreAuthorize("hasAnyRole('PLATFORM_SUPER_ADMIN', 'ENTERPRISE_ADMIN', 'BRANCH_ADMIN', 'HR_MANAGER')")
+    @Transactional
+    @Operation(summary = "Create a company leave")
+    public ResponseEntity<CompanyLeave> createCompanyLeave(@RequestBody CompanyLeave body, @RequestParam Long companyId) {
+        body.setCompany(companyRepository.getReferenceById(companyId));
+        return ResponseEntity.ok(companyLeaveRepository.save(body));
+    }
+
+    @PutMapping("/company-leaves/{id}")
+    @PreAuthorize("hasAnyRole('PLATFORM_SUPER_ADMIN', 'ENTERPRISE_ADMIN', 'BRANCH_ADMIN', 'HR_MANAGER')")
+    @Transactional
+    @Operation(summary = "Update a company leave")
+    public ResponseEntity<CompanyLeave> updateCompanyLeave(@PathVariable Long id, @RequestBody CompanyLeave body) {
+        CompanyLeave cl = companyLeaveRepository.findById(id)
+                .orElseThrow(() -> new ResourceNotFoundException("CompanyLeave", id));
+        cl.setName(body.getName());
+        cl.setBasedOnWeekDay(body.getBasedOnWeekDay());
+        cl.setWeekDay(body.getWeekDay());
+        cl.setStartDate(body.getStartDate());
+        cl.setEndDate(body.getEndDate());
+        return ResponseEntity.ok(companyLeaveRepository.save(cl));
+    }
+
+    @DeleteMapping("/company-leaves/{id}")
+    @PreAuthorize("hasAnyRole('PLATFORM_SUPER_ADMIN', 'ENTERPRISE_ADMIN', 'BRANCH_ADMIN', 'HR_MANAGER')")
+    @Operation(summary = "Delete a company leave")
+    public ResponseEntity<Map<String, String>> deleteCompanyLeave(@PathVariable Long id) {
+        companyLeaveRepository.deleteById(id);
+        return ResponseEntity.ok(Map.of("message", "Company leave deleted"));
+    }
+
+    // ─── Clash Check ──────────────────────────────────────────────────────────
+
+    @GetMapping("/clash-check")
+    @PreAuthorize("hasAuthority('leave:view')")
+    @Transactional(readOnly = true)
+    @Operation(summary = "Check for leave clashes for an employee in a date range")
+    public ResponseEntity<Map<String, Object>> checkClash(
+            @RequestParam Long employeeId,
+            @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate from,
+            @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate to) {
+        List<LeaveRequest> all = leaveRequestRepository.findByEmployeeId(employeeId);
+        List<LeaveRequest> conflicts = new ArrayList<>();
+        for (LeaveRequest lr : all) {
+            if (lr.getStatus() == LeaveRequest.LeaveStatus.REJECTED
+                    || lr.getStatus() == LeaveRequest.LeaveStatus.CANCELLED) {
+                continue;
+            }
+            if (!lr.getStartDate().isAfter(to) && !lr.getEndDate().isBefore(from)) {
+                conflicts.add(lr);
+            }
+        }
+        Map<String, Object> result = new HashMap<>();
+        result.put("clash", !conflicts.isEmpty());
+        result.put("conflicts", conflicts.stream().map(LeaveMapper::toDTO).toList());
+        return ResponseEntity.ok(result);
+    }
+
+    // ─── Export Allocations ───────────────────────────────────────────────────
+
+    @GetMapping("/export")
+    @PreAuthorize("hasAuthority('leave:view')")
+    @Operation(summary = "Export leave allocations as Excel")
+    public void exportAllocations(@RequestParam Long companyId, HttpServletResponse response) throws IOException {
+        List<LeaveAllocation> allocations = leaveAllocationRepository.findByCompanyId(companyId).stream()
+                .filter(a -> a.getStatus() == LeaveAllocation.AllocationStatus.ACTIVE)
+                .toList();
+        response.setContentType("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+        response.setHeader("Content-Disposition", "attachment; filename=leave_allocations.xlsx");
+        try (XSSFWorkbook workbook = new XSSFWorkbook()) {
+            Sheet sheet = workbook.createSheet("Leave Allocations");
+            Row header = sheet.createRow(0);
+            String[] cols = {"System Record ID", "Employee ID", "Employee", "Leave Type", "Year",
+                    "Total Days", "Available Days", "Carryforward Days", "Used Days",
+                    "Remaining Days", "Status"};
+            for (int i = 0; i < cols.length; i++) {
+                header.createCell(i).setCellValue(cols[i]);
+            }
+            int rowNum = 1;
+            for (LeaveAllocation a : allocations) {
+                Row row = sheet.createRow(rowNum++);
+                String empName = a.getEmployee() != null
+                        ? a.getEmployee().getFirstName() + " " + a.getEmployee().getLastName()
+                        : "";
+                String leaveTypeName = a.getLeaveType() != null ? a.getLeaveType().getName() : "";
+                row.createCell(0).setCellValue(a.getEmployee() != null ? a.getEmployee().getId() : 0L);
+                row.createCell(1).setCellValue(a.getEmployee() != null && a.getEmployee().getBadgeId() != null
+                        ? a.getEmployee().getBadgeId() : "");
+                row.createCell(2).setCellValue(empName);
+                row.createCell(3).setCellValue(leaveTypeName);
+                row.createCell(4).setCellValue(a.getYear() != null ? a.getYear() : LocalDate.now().getYear());
+                row.createCell(5).setCellValue(a.getTotalLeaveDays() != null ? a.getTotalLeaveDays() : 0.0);
+                row.createCell(6).setCellValue(a.getAvailableDays() != null ? a.getAvailableDays() : 0.0);
+                row.createCell(7).setCellValue(a.getCarryforwardDays() != null ? a.getCarryforwardDays() : 0.0);
+                double usedDays = getUsedDays(a);
+                double allocatedDays = (a.getAvailableDays() != null ? a.getAvailableDays() : 0.0)
+                        + (a.getCarryforwardDays() != null ? a.getCarryforwardDays() : 0.0);
+                row.createCell(8).setCellValue(usedDays);
+                row.createCell(9).setCellValue(allocatedDays - usedDays);
+                row.createCell(10).setCellValue(a.getStatus() != null ? a.getStatus().name() : "ACTIVE");
+            }
+            workbook.write(response.getOutputStream());
+        }
+    }
+
+    // ─── Import Allocations ───────────────────────────────────────────────────
+
+    @PostMapping("/import")
+    @PreAuthorize("hasAnyRole('PLATFORM_SUPER_ADMIN', 'ENTERPRISE_ADMIN', 'BRANCH_ADMIN', 'HR_MANAGER')")
+    @Transactional
+    @Operation(summary = "Import leave allocations from Excel")
+    public ResponseEntity<Map<String, Object>> importAllocations(
+            @RequestParam("file") MultipartFile file,
+            @RequestParam Long companyId) throws IOException {
+        com.example.demo.base.entity.Company company = companyRepository.findById(companyId)
+                .orElseThrow(() -> new com.example.demo.common.exception.ResourceNotFoundException("Company", companyId));
+
+        int imported = 0;
+        int failed = 0;
+        List<String> errors = new ArrayList<>();
+        Set<String> spreadsheetAllocationKeys = new HashSet<>();
+
+        try (XSSFWorkbook workbook = new XSSFWorkbook(file.getInputStream())) {
+            Sheet sheet = workbook.getSheetAt(0);
+            // Resolve header columns from row 0
+            Row headerRow = sheet.getRow(0);
+            if (headerRow == null) {
+                return ResponseEntity.badRequest().body(Map.<String, Object>of("message", "Empty file", "imported", 0, "failed", 0));
+            }
+            Map<String, Integer> colIndex = new HashMap<>();
+            for (int c = 0; c <= headerRow.getLastCellNum(); c++) {
+                Cell hCell = headerRow.getCell(c);
+                if (hCell != null) {
+                    colIndex.put(getCellStringValue(hCell).trim().toLowerCase(), c);
+                }
+            }
+
+            for (int i = 1; i <= sheet.getLastRowNum(); i++) {
+                Row row = sheet.getRow(i);
+                if (row == null) continue;
+
+                try {
+                    // Employee — matched by "employee id", legacy "badge id", or "employee"
+                    String empRaw = getColValue(row, colIndex, "employee id", "badge id", "employee");
+                    if (empRaw == null || empRaw.isBlank()) { failed++; errors.add("Row " + (i+1) + ": missing employee"); continue; }
+                    Employee employee = null;
+                    try {
+                        long empId = Long.parseLong(empRaw.trim());
+                        employee = employeeRepository.findById(empId).orElse(null);
+                    } catch (NumberFormatException ignored) {}
+                    if (employee == null) {
+                        // Try badge_id lookup
+                        List<Employee> byBadge = employeeRepository.findAll().stream()
+                                .filter(e -> empRaw.trim().equalsIgnoreCase(e.getBadgeId()))
+                                .toList();
+                        if (!byBadge.isEmpty()) employee = byBadge.get(0);
+                    }
+                    if (employee == null) { failed++; errors.add("Row " + (i+1) + ": employee not found: " + empRaw); continue; }
+                    if (employee.getCompany() == null || !companyId.equals(employee.getCompany().getId())) {
+                        failed++; errors.add("Row " + (i+1) + ": employee does not belong to selected company"); continue;
+                    }
+
+                    // Leave type — by "leave type" column
+                    String ltRaw = getColValue(row, colIndex, "leave type");
+                    if (ltRaw == null || ltRaw.isBlank()) { failed++; errors.add("Row " + (i+1) + ": missing leave type"); continue; }
+                    LeaveType leaveType = null;
+                    try {
+                        long ltId = Long.parseLong(ltRaw.trim());
+                        leaveType = leaveTypeRepository.findById(ltId).orElse(null);
+                    } catch (NumberFormatException ignored) {}
+                    if (leaveType == null) {
+                        String ltName = ltRaw.trim();
+                        leaveType = leaveTypeRepository.findByCompanyId(companyId).stream()
+                                .filter(lt -> lt.getName() != null && lt.getName().equalsIgnoreCase(ltName))
+                                .findFirst().orElse(null);
+                    }
+                    if (leaveType == null) { failed++; errors.add("Row " + (i+1) + ": leave type not found: " + ltRaw); continue; }
+                    if (leaveType.getCompany() == null || !companyId.equals(leaveType.getCompany().getId())) {
+                        failed++; errors.add("Row " + (i+1) + ": leave type does not belong to selected company"); continue;
+                    }
+
+                    // Year
+                    String yearRaw = getColValue(row, colIndex, "year");
+                    int year = (yearRaw != null && !yearRaw.isBlank())
+                            ? (int) Double.parseDouble(yearRaw.trim())
+                            : LocalDate.now().getYear();
+
+                    String allocationKey = employee.getId() + ":" + leaveType.getId() + ":" + year;
+                    if (!spreadsheetAllocationKeys.add(allocationKey)) {
+                        failed++;
+                        errors.add("Row " + (i + 1) + ": duplicate allocation in this spreadsheet for employee, leave type and year");
+                        continue;
+                    }
+
+                    // Total days
+                    String totalRaw = getColValue(row, colIndex, "total days", "total_leave_days", "days");
+                    double totalDays = (totalRaw != null && !totalRaw.isBlank()) ? Double.parseDouble(totalRaw.trim()) : 0.0;
+
+                    // Optional fields
+                    String availRaw = getColValue(row, colIndex, "available days", "available_days");
+                    Double availDays = (availRaw != null && !availRaw.isBlank()) ? Double.parseDouble(availRaw.trim()) : totalDays;
+
+                    String cfRaw = getColValue(row, colIndex, "carryforward days", "carryforward_days");
+                    Double cfDays = (cfRaw != null && !cfRaw.isBlank()) ? Double.parseDouble(cfRaw.trim()) : 0.0;
+
+                    String statusRaw = getColValue(row, colIndex, "status");
+                    LeaveAllocation.AllocationStatus status = LeaveAllocation.AllocationStatus.ACTIVE;
+                    if (statusRaw != null && statusRaw.trim().equalsIgnoreCase("EXPIRED")) {
+                        status = LeaveAllocation.AllocationStatus.EXPIRED;
+                    }
+
+                    // Upsert: reuse existing record for same employee/leaveType/year
+                    LeaveAllocation allocation = leaveAllocationRepository
+                            .findByEmployeeIdAndLeaveTypeIdAndYear(employee.getId(), leaveType.getId(), year)
+                            .orElseGet(LeaveAllocation::new);
+                    allocation.setEmployee(employee);
+                    allocation.setLeaveType(leaveType);
+                    allocation.setYear(year);
+                    allocation.setTotalLeaveDays(totalDays);
+                    allocation.setAvailableDays(availDays);
+                    allocation.setCarryforwardDays(cfDays);
+                    allocation.setStatus(status);
+                    allocation.setCompany(company);
+                    leaveAllocationRepository.save(allocation);
+
+                    // Keep the balance source-of-truth in sync so imported allocations are
+                    // immediately visible and usable when employees apply for leave.
+                    if (status == LeaveAllocation.AllocationStatus.ACTIVE) {
+                        Employee balanceEmployee = employee;
+                        LeaveType balanceLeaveType = leaveType;
+                        AvailableLeave balance = availableLeaveRepository
+                                .findByEmployeeIdAndLeaveTypeId(employee.getId(), leaveType.getId())
+                                .orElseGet(() -> {
+                                    AvailableLeave created = new AvailableLeave();
+                                    created.setEmployee(balanceEmployee);
+                                    created.setLeaveType(balanceLeaveType);
+                                    created.setAssignedDate(LocalDate.now());
+                                    return created;
+                                });
+                        balance.setAvailableDays(availDays);
+                        balance.setCarryforwardDays(cfDays);
+                        if (balance.getAssignedDate() == null) balance.setAssignedDate(LocalDate.now());
+                        if (Boolean.TRUE.equals(leaveType.getReset()) && balance.getResetDate() == null) {
+                            balance.setResetDate(balance.computeNextResetDate(LocalDate.now()));
+                        }
+                        if (leaveType.getCarryforwardType() == LeaveType.CarryforwardType.CARRYFORWARD_EXPIRE) {
+                            balance.setExpiredDate(leaveType.getCarryforwardExpireDate());
+                        }
+                        availableLeaveRepository.save(balance);
+                    }
+                    imported++;
+
+                } catch (Exception ex) {
+                    failed++;
+                    errors.add("Row " + (i+1) + ": " + ex.getMessage());
+                }
+            }
+        }
+
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("message", "Import completed");
+        result.put("imported", imported);
+        result.put("failed", failed);
+        result.put("errors", errors);
+        return ResponseEntity.ok(result);
+    }
+
+    private String getColValue(Row row, Map<String, Integer> colIndex, String... candidates) {
+        for (String key : candidates) {
+            Integer idx = colIndex.get(key.toLowerCase());
+            if (idx != null) {
+                Cell cell = row.getCell(idx);
+                if (cell != null) return getCellStringValue(cell);
+            }
+        }
+        return null;
+    }
+
+    private String getCellStringValue(Cell cell) {
+        if (cell == null) return null;
+        return switch (cell.getCellType()) {
+            case STRING -> cell.getStringCellValue();
+            case NUMERIC -> {
+                double d = cell.getNumericCellValue();
+                yield (d == Math.floor(d)) ? String.valueOf((long) d) : String.valueOf(d);
+            }
+            case BOOLEAN -> String.valueOf(cell.getBooleanCellValue());
+            case FORMULA -> {
+                try { yield String.valueOf(cell.getNumericCellValue()); }
+                catch (Exception e) { yield cell.getStringCellValue(); }
+            }
+            default -> "";
+        };
+    }
+
+    // ─── Import Historical Leave Requests ──────────────────────────────────────
+
+    @GetMapping("/requests/history-template")
+    @PreAuthorize("hasAnyRole('PLATFORM_SUPER_ADMIN', 'ENTERPRISE_ADMIN', 'BRANCH_ADMIN', 'HR_MANAGER')")
+    @Operation(summary = "Download the approved historical leave import template")
+    public void downloadHistoricalLeaveTemplate(HttpServletResponse response) throws IOException {
+        response.setContentType("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+        response.setHeader("Content-Disposition", "attachment; filename=sample_old_leave_template.xlsx");
+
+        try (XSSFWorkbook workbook = new XSSFWorkbook()) {
+            CellStyle headerStyle = workbook.createCellStyle();
+            Font headerFont = workbook.createFont();
+            headerFont.setBold(true);
+            headerFont.setColor(IndexedColors.WHITE.getIndex());
+            headerStyle.setFont(headerFont);
+            headerStyle.setFillForegroundColor(IndexedColors.INDIGO.getIndex());
+            headerStyle.setFillPattern(FillPatternType.SOLID_FOREGROUND);
+            headerStyle.setAlignment(HorizontalAlignment.CENTER);
+
+            createHistoricalTemplateSheet(workbook, "Annual Leave", headerStyle);
+            createHistoricalTemplateSheet(workbook, "Sick Leave", headerStyle);
+            workbook.setActiveSheet(0);
+            workbook.write(response.getOutputStream());
+        }
+    }
+
+    private void createHistoricalTemplateSheet(XSSFWorkbook workbook, String sheetName,
+                                                CellStyle headerStyle) {
+        Sheet sheet = workbook.createSheet(sheetName);
+        sheet.createFreezePane(0, 1);
+
+        Row header = sheet.createRow(0);
+        String[] columns = {"Emp ID", "Request From", "Request To", "Duration"};
+        for (int column = 0; column < columns.length; column++) {
+            Cell cell = header.createCell(column);
+            cell.setCellValue(columns[column]);
+            cell.setCellStyle(headerStyle);
+        }
+
+        sheet.setColumnWidth(0, 18 * 256);
+        sheet.setColumnWidth(1, 18 * 256);
+        sheet.setColumnWidth(2, 18 * 256);
+        sheet.setColumnWidth(3, 14 * 256);
+        sheet.setAutoFilter(new CellRangeAddress(0, 0, 0, 3));
+    }
+
+    @PostMapping("/requests/import-history")
+    @PreAuthorize("hasAnyRole('PLATFORM_SUPER_ADMIN', 'ENTERPRISE_ADMIN', 'BRANCH_ADMIN', 'HR_MANAGER')")
+    @Transactional
+    @Operation(summary = "Import approved historical leave requests from Annual Leave / Sick leave Excel sheets")
+    public ResponseEntity<Map<String, Object>> importHistoricalLeaveRequests(
+            @RequestParam("file") MultipartFile file,
+            @RequestParam Long companyId) throws IOException {
+        var company = companyRepository.findById(companyId)
+                .orElseThrow(() -> new ResourceNotFoundException("Company", companyId));
+        AccessScopeContext.ScopeData scope = AccessScopeContext.get();
+        if (scope != null && !scope.canAccess(companyId)) {
+            throw new AccessDeniedException("You cannot import leave history outside your company access scope");
+        }
+
+        List<LeaveType> companyLeaveTypes = leaveService.getLeaveTypes().stream()
+                .filter(type -> Boolean.TRUE.equals(type.getIsOrganizationWide())
+                        || (type.getCompany() != null && companyId.equals(type.getCompany().getId())))
+                .toList();
+        int imported = 0;
+        int duplicates = 0;
+        int skipped = 0;
+        int failed = 0;
+        List<String> errors = new ArrayList<>();
+        Set<String> spreadsheetRequestKeys = new HashSet<>();
+
+        try (XSSFWorkbook workbook = new XSSFWorkbook(file.getInputStream())) {
+            for (Sheet sheet : workbook) {
+                String sheetName = sheet.getSheetName();
+                LeaveType leaveType = resolveHistoricalLeaveType(sheetName, companyLeaveTypes);
+                if (leaveType == null) {
+                    skipped += Math.max(sheet.getLastRowNum() - 1, 0);
+                    errors.add("Sheet '" + sheetName + "': no matching active Annual/Sick leave type found for the selected company");
+                    continue;
+                }
+
+                Row headerRow = findHistoricalHeaderRow(sheet);
+                if (headerRow == null) {
+                    errors.add("Sheet '" + sheetName + "': required Emp ID / Request From headers not found");
+                    continue;
+                }
+                Map<String, Integer> columns = historicalColumnIndexes(headerRow);
+                Employee currentEmployee = null;
+
+                for (int rowIndex = headerRow.getRowNum() + 1; rowIndex <= sheet.getLastRowNum(); rowIndex++) {
+                    Row row = sheet.getRow(rowIndex);
+                    if (row == null) continue;
+                    Cell fromCell = historicalCell(row, columns, "request from");
+                    Cell toCell = historicalCell(row, columns, "request to");
+                    if (isBlankCell(fromCell) && isBlankCell(toCell)) {
+                        skipped++;
+                        continue;
+                    }
+
+                    try {
+                        String badge = historicalString(row, columns, "emp id");
+                        if (badge != null && !badge.isBlank()) {
+                            currentEmployee = employeeRepository.findByBadgeIdAndCompanyId(badge.trim(), companyId)
+                                    .orElse(null);
+                            if (currentEmployee == null) {
+                                throw new BadRequestException("employee badge not found in selected company: " + badge.trim());
+                            }
+                        }
+                        if (currentEmployee == null) {
+                            throw new BadRequestException("missing employee badge and no preceding employee row to inherit");
+                        }
+
+                        LocalDate[] dates = parseHistoricalDateRange(fromCell, toCell);
+                        LocalDate startDate = dates[0];
+                        LocalDate endDate = dates[1];
+                        if (endDate.isBefore(startDate)) {
+                            throw new BadRequestException("Request To is before Request From");
+                        }
+                        double days = parseHistoricalDuration(historicalString(row, columns, "duration"));
+                        if (days <= 0) {
+                            days = leaveService.calculateWorkingDays(
+                                    startDate, endDate, companyId, leaveType, currentEmployee.getId());
+                        }
+                        if (days <= 0) throw new BadRequestException("duration must be greater than zero");
+
+                        String requestKey = currentEmployee.getId() + ":" + leaveType.getId()
+                                + ":" + startDate + ":" + endDate;
+                        if (!spreadsheetRequestKeys.add(requestKey)) {
+                            duplicates++;
+                            continue;
+                        }
+
+                        boolean exists = leaveRequestRepository
+                                .existsByEmployeeIdAndLeaveTypeIdAndStartDateAndEndDateAndStatus(
+                                        currentEmployee.getId(), leaveType.getId(), startDate, endDate,
+                                        LeaveRequest.LeaveStatus.APPROVED);
+                        if (exists) {
+                            duplicates++;
+                            continue;
+                        }
+                        if (leaveRequestRepository.existsApprovedOverlap(
+                                currentEmployee.getId(), leaveType.getId(), startDate, endDate)) {
+                            failed++;
+                            errors.add("Sheet '" + sheetName + "', row " + (rowIndex + 1)
+                                    + ": overlaps an existing approved leave request");
+                            continue;
+                        }
+
+                        LeaveRequest request = new LeaveRequest();
+                        request.setEmployee(currentEmployee);
+                        request.setLeaveType(leaveType);
+                        request.setStartDate(startDate);
+                        request.setEndDate(endDate);
+                        request.setRequestedDays(days);
+                        request.setStatus(LeaveRequest.LeaveStatus.APPROVED);
+                        request.setApprovedAvailableDays(days);
+                        request.setApprovedCarryforwardDays(0.0);
+                        request.setDescription("Historical leave imported from " + file.getOriginalFilename()
+                                + " (" + sheetName + ")");
+                        request.setCompany(company);
+                        leaveRequestRepository.save(request);
+                        imported++;
+                    } catch (Exception ex) {
+                        failed++;
+                        errors.add("Sheet '" + sheetName + "', row " + (rowIndex + 1) + ": " + ex.getMessage());
+                    }
+                }
+            }
+        }
+
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("message", "Historical leave import completed");
+        result.put("imported", imported);
+        result.put("duplicates", duplicates);
+        result.put("skipped", skipped);
+        result.put("failed", failed);
+        result.put("errors", errors);
+        return ResponseEntity.ok(result);
+    }
+
+    private double getUsedDays(LeaveAllocation allocation) {
+        if (allocation.getEmployee() == null || allocation.getLeaveType() == null) return 0.0;
+        int allocationYear = allocation.getYear() != null
+                ? allocation.getYear() : LocalDate.now().getYear();
+        LeavePeriodResolver.Period period = LeavePeriodResolver.forAllocationYear(
+                allocation.getLeaveType(), allocationYear);
+        Double used = leaveRequestRepository.sumApprovedDaysForPeriod(
+                allocation.getEmployee().getId(), allocation.getLeaveType().getId(),
+                period.start(), period.end());
+        return used != null ? used : 0.0;
+    }
+
+    private double getCurrentPeriodUsedDays(AvailableLeave balance) {
+        if (balance.getEmployee() == null || balance.getLeaveType() == null) return 0.0;
+        LeavePeriodResolver.Period period = LeavePeriodResolver.containing(
+                balance.getLeaveType(), LocalDate.now());
+        Double used = leaveRequestRepository.sumApprovedDaysForPeriod(
+                balance.getEmployee().getId(), balance.getLeaveType().getId(),
+                period.start(), period.end());
+        return used != null ? used : 0.0;
+    }
+
+    private LeaveType resolveHistoricalLeaveType(String sheetName, List<LeaveType> leaveTypes) {
+        String normalizedSheet = sheetName == null ? "" : sheetName.trim().toLowerCase(Locale.ROOT);
+        String keyword = normalizedSheet.contains("sick") ? "sick"
+                : normalizedSheet.contains("annual") ? "annual" : null;
+        if (keyword == null) return null;
+        return leaveTypes.stream()
+                .filter(LeaveType::isActive)
+                .filter(type -> type.getName() != null
+                        && type.getName().toLowerCase(Locale.ROOT).contains(keyword))
+                .findFirst().orElse(null);
+    }
+
+    private Row findHistoricalHeaderRow(Sheet sheet) {
+        for (int i = 0; i <= Math.min(sheet.getLastRowNum(), 10); i++) {
+            Row row = sheet.getRow(i);
+            if (row == null) continue;
+            Map<String, Integer> columns = historicalColumnIndexes(row);
+            if (columns.containsKey("emp id") && columns.containsKey("request from")) return row;
+        }
+        return null;
+    }
+
+    private Map<String, Integer> historicalColumnIndexes(Row row) {
+        Map<String, Integer> columns = new HashMap<>();
+        for (int i = 0; i < row.getLastCellNum(); i++) {
+            String value = getCellStringValue(row.getCell(i));
+            if (value != null && !value.isBlank()) {
+                columns.put(value.trim().toLowerCase(Locale.ROOT), i);
+            }
+        }
+        return columns;
+    }
+
+    private Cell historicalCell(Row row, Map<String, Integer> columns, String name) {
+        Integer index = columns.get(name);
+        return index == null ? null : row.getCell(index);
+    }
+
+    private String historicalString(Row row, Map<String, Integer> columns, String name) {
+        Cell cell = historicalCell(row, columns, name);
+        return cell == null ? null : new DataFormatter(Locale.ENGLISH).formatCellValue(cell);
+    }
+
+    private boolean isBlankCell(Cell cell) {
+        return cell == null || cell.getCellType() == CellType.BLANK
+                || (cell.getCellType() == CellType.STRING && cell.getStringCellValue().trim().isEmpty());
+    }
+
+    private LocalDate[] parseHistoricalDateRange(Cell fromCell, Cell toCell) {
+        if (fromCell == null || isBlankCell(fromCell)) throw new BadRequestException("missing Request From date");
+        LocalDate start;
+        LocalDate end = null;
+        if (fromCell.getCellType() == CellType.STRING) {
+            String raw = fromCell.getStringCellValue().replace('\u00A0', ' ').trim();
+            String[] range = raw.split("\\s+[–—-]\\s+", 2);
+            start = parseHistoricalDateText(range[0]);
+            if (range.length == 2) end = parseHistoricalDateText(range[1]);
+        } else {
+            start = parseHistoricalDateCell(fromCell);
+        }
+        if (end == null && toCell != null && !isBlankCell(toCell)) end = parseHistoricalDateCell(toCell);
+        if (end == null) end = start;
+        return new LocalDate[]{start, end};
+    }
+
+    private LocalDate parseHistoricalDateCell(Cell cell) {
+        if (cell.getCellType() == CellType.NUMERIC && DateUtil.isCellDateFormatted(cell)) {
+            return cell.getDateCellValue().toInstant().atZone(ZoneId.systemDefault()).toLocalDate();
+        }
+        if (cell.getCellType() == CellType.NUMERIC) {
+            return DateUtil.getLocalDateTime(cell.getNumericCellValue()).toLocalDate();
+        }
+        return parseHistoricalDateText(getCellStringValue(cell));
+    }
+
+    private LocalDate parseHistoricalDateText(String raw) {
+        if (raw == null || raw.isBlank()) throw new BadRequestException("blank date");
+        String value = raw.replace('\u00A0', ' ').trim();
+        String[] patterns = {"d-MMM-uuuu", "d-MMM-uu", "d MMM uuuu", "d MMM uu",
+                "uuuu-MM-dd", "d/M/uuuu", "d/M/uu"};
+        for (String pattern : patterns) {
+            try {
+                DateTimeFormatter formatter = new DateTimeFormatterBuilder()
+                        .parseCaseInsensitive().appendPattern(pattern).toFormatter(Locale.ENGLISH);
+                return LocalDate.parse(value, formatter);
+            } catch (DateTimeParseException ignored) { }
+        }
+        throw new BadRequestException("unsupported date: " + value);
+    }
+
+    private double parseHistoricalDuration(String raw) {
+        if (raw == null || raw.isBlank()) return 0.0;
+        java.util.regex.Matcher matcher = java.util.regex.Pattern
+                .compile("[-+]?[0-9]*\\.?[0-9]+")
+                .matcher(raw.replace(',', '.'));
+        return matcher.find() ? Double.parseDouble(matcher.group()) : 0.0;
+    }
+
+    // ─── Export Holidays ──────────────────────────────────────────────────────
+
+    @GetMapping("/holidays/export")
+    @PreAuthorize("hasAnyRole('PLATFORM_SUPER_ADMIN', 'ENTERPRISE_ADMIN', 'BRANCH_ADMIN', 'HR_MANAGER')")
+    @Operation(summary = "Export holidays as Excel")
+    public void exportHolidays(@RequestParam Long companyId, HttpServletResponse response) throws IOException {
+        List<Holiday> holidays = holidayRepository.findByCompanyId(companyId);
+        response.setContentType("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+        response.setHeader("Content-Disposition", "attachment; filename=holidays.xlsx");
+        try (XSSFWorkbook workbook = new XSSFWorkbook()) {
+            Sheet sheet = workbook.createSheet("Holidays");
+            Row header = sheet.createRow(0);
+            String[] cols = {"Name", "Start Date", "End Date", "Recurring"};
+            for (int i = 0; i < cols.length; i++) {
+                header.createCell(i).setCellValue(cols[i]);
+            }
+            int rowNum = 1;
+            for (Holiday h : holidays) {
+                Row row = sheet.createRow(rowNum++);
+                row.createCell(0).setCellValue(h.getName() != null ? h.getName() : "");
+                row.createCell(1).setCellValue(h.getStartDate() != null ? h.getStartDate().toString() : "");
+                row.createCell(2).setCellValue(h.getEndDate() != null ? h.getEndDate().toString() : "");
+                row.createCell(3).setCellValue(Boolean.TRUE.equals(h.getRecurring()) ? "Yes" : "No");
+            }
+            workbook.write(response.getOutputStream());
+        }
+    }
+
+    // ─── Import Holidays ──────────────────────────────────────────────────────
+
+    @PostMapping("/holidays/import")
+    @PreAuthorize("hasAnyRole('PLATFORM_SUPER_ADMIN', 'ENTERPRISE_ADMIN', 'BRANCH_ADMIN', 'HR_MANAGER')")
+    @Transactional
+    @Operation(summary = "Import holidays from Excel")
+    public ResponseEntity<Map<String, Object>> importHolidays(
+            @RequestParam("file") MultipartFile file,
+            @RequestParam Long companyId) throws IOException {
+        if (TenantContext.DEFAULT_TENANT.equals(TenantContext.getTenant())) {
+            throw new BadRequestException("X-Company-Id header is required to import holidays");
+        }
+        int imported = 0;
+        int duplicates = 0;
+        List<String> errors = new ArrayList<>();
+        Set<String> spreadsheetHolidayKeys = new HashSet<>();
+        try (XSSFWorkbook workbook = new XSSFWorkbook(file.getInputStream())) {
+            Sheet sheet = workbook.getSheetAt(0);
+            for (int i = 1; i <= sheet.getLastRowNum(); i++) {
+                Row row = sheet.getRow(i);
+                if (row == null) continue;
+                try {
+                    Cell nameCell = row.getCell(0);
+                    Cell startCell = row.getCell(1);
+                    Cell endCell = row.getCell(2);
+                    Cell recurringCell = row.getCell(3);
+
+                    if (nameCell == null || nameCell.getCellType() == CellType.BLANK) {
+                        errors.add("Row " + (i + 1) + ": Name is required");
+                        continue;
+                    }
+                    String name = nameCell.getStringCellValue().trim();
+
+                    if (startCell == null || startCell.getCellType() == CellType.BLANK) {
+                        errors.add("Row " + (i + 1) + ": Start Date is required");
+                        continue;
+                    }
+                    LocalDate startDate = LocalDate.parse(startCell.getStringCellValue().trim());
+
+                    LocalDate endDate = null;
+                    if (endCell != null && endCell.getCellType() != CellType.BLANK) {
+                        endDate = LocalDate.parse(endCell.getStringCellValue().trim());
+                    }
+
+                    boolean recurring = false;
+                    if (recurringCell != null && recurringCell.getCellType() != CellType.BLANK) {
+                        String recurringVal = recurringCell.getStringCellValue().trim().toLowerCase();
+                        recurring = "true".equals(recurringVal) || "yes".equals(recurringVal);
+                    }
+
+                    String holidayKey = name.trim().toLowerCase(Locale.ROOT) + ":" + startDate + ":" + endDate + ":" + recurring;
+                    if (!spreadsheetHolidayKeys.add(holidayKey)
+                            || holidayRepository.findDuplicateForImport(companyId, name, startDate, endDate, recurring).isPresent()) {
+                        duplicates++;
+                        continue;
+                    }
+
+                    Holiday holiday = new Holiday();
+                    holiday.setName(name);
+                    holiday.setStartDate(startDate);
+                    holiday.setEndDate(endDate);
+                    holiday.setRecurring(recurring);
+                    holiday.setCompany(companyRepository.getReferenceById(companyId));
+                    holidayRepository.save(holiday);
+                    imported++;
+                } catch (Exception e) {
+                    errors.add("Row " + (i + 1) + ": " + e.getMessage());
+                }
+            }
+        }
+        Map<String, Object> result = new HashMap<>();
+        result.put("imported", imported);
+        result.put("duplicates", duplicates);
+        result.put("errors", errors);
+        return ResponseEntity.ok(result);
+    }
+
+    // ─── Accrual Log ──────────────────────────────────────────────────────────
+
+    @GetMapping("/accrual-log")
+    @PreAuthorize("hasAuthority('leave:view')")
+    @Operation(summary = "Get accrual history for an employee (optionally filtered by leave type)")
+    public ResponseEntity<List<LeaveAccrualLog>> getAccrualLog(
+            @RequestParam Long employeeId,
+            @RequestParam(required = false) Long leaveTypeId) {
+        List<LeaveAccrualLog> logs = leaveTypeId != null
+                ? accrualLogRepository.findByEmployeeIdAndLeaveTypeIdOrderByAccrualDateDesc(employeeId, leaveTypeId)
+                : accrualLogRepository.findByEmployeeIdOrderByAccrualDateDesc(employeeId);
+        return ResponseEntity.ok(logs);
+    }
+
+    @PostMapping("/accrual/run")
+    @PreAuthorize("hasAuthority('leave:manage')")
+    @Operation(summary = "Manually trigger monthly accrual for a specific date (defaults to today)")
+    public ResponseEntity<Map<String, Object>> runAccrual(
+            @RequestParam(required = false) @org.springframework.format.annotation.DateTimeFormat(iso = org.springframework.format.annotation.DateTimeFormat.ISO.DATE) LocalDate date) {
+        LocalDate target = date != null ? date : LocalDate.now();
+        // Always snap to the last day of the given month so mid-month manual runs
+        // don't bypass the idempotency check and double-credit the same calendar month.
+        target = target.withDayOfMonth(target.lengthOfMonth());
+        int posted = leaveAccrualService.processMonthlyAccrual(target);
+        return ResponseEntity.ok(Map.of("posted", posted, "date", target.toString()));
+    }
+
+    // ─── Dashboard ────────────────────────────────────────────────────────────
+
+    @GetMapping("/dashboard")
+    @PreAuthorize("hasAuthority('leave:view')")
+    @Transactional(readOnly = true)
+    @Operation(summary = "Get leave dashboard stats for a company, optionally filtered by month (yyyy-MM)")
+    public ResponseEntity<Map<String, Object>> getDashboard(
+            @RequestParam Long companyId,
+            @RequestParam(required = false) String month) {
+        List<LeaveRequest> all = leaveRequestRepository.findByCompanyId(companyId);
+
+        // Filter by month if provided (format: yyyy-MM)
+        List<LeaveRequest> filtered = all;
+        if (month != null && !month.isBlank()) {
+            filtered = all.stream()
+                    .filter(r -> r.getStartDate() != null && r.getStartDate().toString().startsWith(month))
+                    .collect(java.util.stream.Collectors.toList());
+        }
+
+        long total = filtered.size();
+        long pending = filtered.stream().filter(r -> r.getStatus() == LeaveRequest.LeaveStatus.REQUESTED).count();
+        long approved = filtered.stream().filter(r -> r.getStatus() == LeaveRequest.LeaveStatus.APPROVED).count();
+        long rejected = filtered.stream().filter(r -> r.getStatus() == LeaveRequest.LeaveStatus.REJECTED).count();
+
+        // Monthly trend — 6 months ending at the selected month (or current month)
+        LocalDate trendRef = (month != null && !month.isBlank())
+                ? LocalDate.parse(month + "-01")
+                : LocalDate.now();
+        List<Map<String, Object>> monthlyTrend = new ArrayList<>();
+        for (int i = 5; i >= 0; i--) {
+            LocalDate d = trendRef.minusMonths(i).withDayOfMonth(1);
+            String ym = d.toString().substring(0, 7);
+            String label = d.getMonth().getDisplayName(java.time.format.TextStyle.SHORT, java.util.Locale.ENGLISH);
+            List<LeaveRequest> monthLeaves = all.stream()
+                    .filter(r -> r.getStartDate() != null && r.getStartDate().toString().startsWith(ym))
+                    .collect(java.util.stream.Collectors.toList());
+            Map<String, Object> m = new LinkedHashMap<>();
+            m.put("month", label);
+            m.put("approved", monthLeaves.stream().filter(r -> r.getStatus() == LeaveRequest.LeaveStatus.APPROVED).count());
+            m.put("rejected", monthLeaves.stream().filter(r -> r.getStatus() == LeaveRequest.LeaveStatus.REJECTED).count());
+            m.put("pending", monthLeaves.stream().filter(r -> r.getStatus() == LeaveRequest.LeaveStatus.REQUESTED).count());
+            monthlyTrend.add(m);
+        }
+
+        // Department-wise breakdown (from filtered set)
+        Map<String, Long> deptMap = new LinkedHashMap<>();
+        for (LeaveRequest r : filtered) {
+            if (r.getEmployee() != null && r.getEmployee().getDepartment() != null) {
+                String deptName = r.getEmployee().getDepartment().getName();
+                deptMap.merge(deptName, 1L, Long::sum);
+            }
+        }
+        List<Map<String, Object>> departmentBreakdown = deptMap.entrySet().stream()
+                .map(e -> {
+                    Map<String, Object> m = new LinkedHashMap<>();
+                    m.put("department", e.getKey());
+                    m.put("count", e.getValue());
+                    return m;
+                }).collect(java.util.stream.Collectors.toList());
+
+        // Weekly breakdown — current week (Mon-Sun)
+        LocalDate today = LocalDate.now();
+        LocalDate weekStart = today.with(java.time.DayOfWeek.MONDAY);
+        List<Map<String, Object>> weeklyBreakdown = new ArrayList<>();
+        for (int i = 0; i < 7; i++) {
+            LocalDate day = weekStart.plusDays(i);
+            long count = all.stream()
+                    .filter(r -> r.getStartDate() != null && !r.getStartDate().isAfter(day)
+                            && r.getEndDate() != null && !r.getEndDate().isBefore(day)
+                            && r.getStatus() == LeaveRequest.LeaveStatus.APPROVED)
+                    .count();
+            Map<String, Object> m = new LinkedHashMap<>();
+            m.put("day", day.getDayOfWeek().getDisplayName(java.time.format.TextStyle.SHORT, java.util.Locale.ENGLISH));
+            m.put("date", day.toString());
+            m.put("onLeave", count);
+            weeklyBreakdown.add(m);
+        }
+
+        Map<String, Object> dashboard = new HashMap<>();
+        dashboard.put("totalRequests", total);
+        dashboard.put("pendingRequests", pending);
+        dashboard.put("approvedRequests", approved);
+        dashboard.put("rejectedRequests", rejected);
+        dashboard.put("monthlyTrend", monthlyTrend);
+        dashboard.put("departmentBreakdown", departmentBreakdown);
+        dashboard.put("weeklyBreakdown", weeklyBreakdown);
+        return ResponseEntity.ok(dashboard);
+    }
+}

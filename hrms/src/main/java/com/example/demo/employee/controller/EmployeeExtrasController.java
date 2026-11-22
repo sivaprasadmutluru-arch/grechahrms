@@ -1,0 +1,645 @@
+package com.example.demo.employee.controller;
+
+import com.example.demo.base.repository.CompanyRepository;
+import com.example.demo.base.service.EmailService;
+import com.example.demo.common.context.AccessScopeContext;
+import com.example.demo.common.exception.ResourceNotFoundException;
+import com.example.demo.common.util.ScopeFilter;
+import com.example.demo.employee.dto.WorkInfoResponse;
+import com.example.demo.employee.entity.*;
+import com.example.demo.employee.repository.*;
+import com.example.demo.notification.entity.Notification;
+import com.example.demo.notification.service.NotificationService;
+import com.example.demo.payroll.entity.Contract;
+import com.example.demo.payroll.entity.EncashmentCondition;
+import com.example.demo.payroll.repository.ContractRepository;
+import com.example.demo.payroll.repository.EncashmentConditionRepository;
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.tags.Tag;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.http.ResponseEntity;
+import org.springframework.security.access.prepost.PreAuthorize;
+import org.springframework.transaction.annotation.Transactional;
+import org.springframework.web.bind.annotation.*;
+
+import java.util.List;
+import java.util.Map;
+
+@Slf4j
+@RestController
+@RequestMapping("/api")
+@RequiredArgsConstructor
+@Tag(name = "Employee Extras")
+public class EmployeeExtrasController {
+
+    private final EmployeeRepository employeeRepository;
+    private final EmployeeWorkInformationRepository workInfoRepository;
+    private final EmployeeBankDetailsRepository bankDetailsRepository;
+    private final DisciplinaryActionRepository disciplinaryRepository;
+    private final BonusPointRepository bonusPointRepository;
+    private final CompanyRepository companyRepository;
+    private final EmployeeTagRepository employeeTagRepository;
+    private final EmployeeNoteRepository employeeNoteRepository;
+    private final NoteFileRepository noteFileRepository;
+    private final ActionTypeRepository actionTypeRepository;
+    private final EmployeeGeneralSettingRepository employeeGeneralSettingRepository;
+    private final ProfileEditFeatureRepository profileEditFeatureRepository;
+    private final PolicyRepository policyRepository;
+    private final EncashmentConditionRepository encashmentConditionRepository;
+    private final ContractRepository contractRepository;
+    private final NotificationService notificationService;
+    private final com.example.demo.employee.service.ReportingManagerService reportingManagers;
+    private final EmailService emailService;
+
+    // ─── Work Information ────────────────────────────────────────────────────
+
+    @GetMapping("/employees/{id}/work-info")
+    @PreAuthorize("hasAuthority('employee:view')")
+    @Transactional(readOnly = true)
+    @Operation(summary = "Get work information for an employee")
+    public ResponseEntity<WorkInfoResponse> getWorkInfo(@PathVariable Long id) {
+        return workInfoRepository.findByEmployeeId(id)
+                .map(wi -> {
+                    WorkInfoResponse r = WorkInfoResponse.from(wi);
+                    // If work-info has no salary data, fall back to the best available contract
+                    // Priority: ACTIVE > DRAFT > any other status
+                    if (r.getBasicSalary() == null && r.getHousingAllowance() == null
+                            && r.getTransportAllowance() == null && r.getOtherAllowance() == null) {
+                        List<Contract> contracts = contractRepository
+                                .findByEmployeeIdAndContractStatusIn(id,
+                                        List.of(Contract.ContractStatus.ACTIVE, Contract.ContractStatus.DRAFT));
+                        contracts.stream()
+                                .min(java.util.Comparator.comparingInt(c ->
+                                        c.getContractStatus() == Contract.ContractStatus.ACTIVE ? 0 : 1))
+                                .ifPresent(c -> {
+                                    r.setBasicSalary(c.getWage());
+                                    r.setHousingAllowance(c.getHousingAllowance());
+                                    r.setTransportAllowance(c.getTransportAllowance());
+                                    r.setOtherAllowance(c.getOtherAllowance());
+                                });
+                    }
+                    return r;
+                })
+                .map(ResponseEntity::ok)
+                .orElse(ResponseEntity.notFound().build());
+    }
+
+    @PostMapping("/employees/{id}/work-info")
+    @PreAuthorize("hasAuthority('employee:edit')")
+    @Transactional
+    @Operation(summary = "Create work information for an employee")
+    public ResponseEntity<EmployeeWorkInformation> createWorkInfo(@PathVariable Long id,
+                                                                   @RequestBody EmployeeWorkInformation workInfo) {
+        Employee employee = employeeRepository.findById(id).orElseThrow(() -> new ResourceNotFoundException("Employee", id));
+        workInfo.setEmployee(employee);
+        reportingManagers.assign(employee, workInfo.getReportingManager() == null ? null : workInfo.getReportingManager().getId());
+        return ResponseEntity.ok(workInfoRepository.save(workInfo));
+    }
+
+    @PutMapping("/employees/{id}/work-info")
+    @PreAuthorize("hasAuthority('employee:edit')")
+    @Transactional
+    @Operation(summary = "Update work information for an employee")
+    public ResponseEntity<EmployeeWorkInformation> updateWorkInfo(@PathVariable Long id,
+                                                                   @RequestBody EmployeeWorkInformation updated) {
+        EmployeeWorkInformation wi = workInfoRepository.findByEmployeeId(id)
+                .orElseGet(() -> {
+                    EmployeeWorkInformation n = new EmployeeWorkInformation();
+                    n.setEmployee(employeeRepository.getReferenceById(id));
+                    return n;
+                });
+        wi.setDepartment(updated.getDepartment());
+        wi.setJobPosition(updated.getJobPosition());
+        wi.setJobRole(updated.getJobRole());
+        wi.setShift(updated.getShift());
+        wi.setWorkType(updated.getWorkType());
+        reportingManagers.assign(wi.getEmployee(), updated.getReportingManager() == null ? null : updated.getReportingManager().getId());
+        wi.setReportingManager(wi.getEmployee().getReportingManager());
+        wi.setLocation(updated.getLocation());
+        wi.setBasicSalary(updated.getBasicSalary());
+        wi.setHousingAllowance(updated.getHousingAllowance());
+        wi.setTransportAllowance(updated.getTransportAllowance());
+        wi.setOtherAllowance(updated.getOtherAllowance());
+        wi.setDateJoining(updated.getDateJoining());
+        wi.setContractEndDate(updated.getContractEndDate());
+        return ResponseEntity.ok(workInfoRepository.save(wi));
+    }
+
+    // ─── Bank Details ─────────────────────────────────────────────────────────
+
+    @GetMapping("/employees/{id}/bank-details")
+    @PreAuthorize("hasAuthority('employee:view')")
+    @Transactional(readOnly = true)
+    @Operation(summary = "Get bank details for an employee")
+    public ResponseEntity<EmployeeBankDetails> getBankDetails(@PathVariable Long id) {
+        return bankDetailsRepository.findByEmployeeId(id)
+                .map(ResponseEntity::ok)
+                .orElse(ResponseEntity.notFound().build());
+    }
+
+    @PostMapping("/employees/{id}/bank-details")
+    @PreAuthorize("hasAuthority('employee:edit')")
+    @Transactional
+    @Operation(summary = "Create bank details for an employee")
+    public ResponseEntity<EmployeeBankDetails> createBankDetails(@PathVariable Long id,
+                                                                   @RequestBody EmployeeBankDetails bankDetails) {
+        bankDetails.setEmployee(employeeRepository.getReferenceById(id));
+        return ResponseEntity.ok(bankDetailsRepository.save(bankDetails));
+    }
+
+    @PutMapping("/employees/{id}/bank-details")
+    @PreAuthorize("hasAuthority('employee:edit')")
+    @Transactional
+    @Operation(summary = "Update bank details for an employee")
+    public ResponseEntity<EmployeeBankDetails> updateBankDetails(@PathVariable Long id,
+                                                                   @RequestBody EmployeeBankDetails updated) {
+        EmployeeBankDetails bd = bankDetailsRepository.findByEmployeeId(id)
+                .orElseGet(() -> {
+                    EmployeeBankDetails n = new EmployeeBankDetails();
+                    n.setEmployee(employeeRepository.getReferenceById(id));
+                    return n;
+                });
+        bd.setBankName(updated.getBankName());
+        bd.setAccountNumber(updated.getAccountNumber());
+        bd.setBranch(updated.getBranch());
+        bd.setCountry(updated.getCountry());
+        bd.setState(updated.getState());
+        bd.setCity(updated.getCity());
+        bd.setIfscCode(updated.getIfscCode());
+        bd.setSwiftCode(updated.getSwiftCode());
+        bd.setAddress(updated.getAddress());
+        return ResponseEntity.ok(bankDetailsRepository.save(bd));
+    }
+
+    // ─── Disciplinary Actions ─────────────────────────────────────────────────
+
+    @GetMapping("/disciplinary-actions")
+    @PreAuthorize("hasAuthority('employee:view')")
+    @Transactional(readOnly = true)
+    @Operation(summary = "List disciplinary actions (company-scoped)")
+    public ResponseEntity<List<DisciplinaryAction>> listDisciplinary() {
+        var spec = ScopeFilter.<DisciplinaryAction>byCompany();
+        return ResponseEntity.ok(spec != null ? disciplinaryRepository.findAll(spec) : disciplinaryRepository.findAll());
+    }
+
+    @PostMapping("/disciplinary-actions")
+    @PreAuthorize("hasAnyRole('PLATFORM_SUPER_ADMIN', 'ENTERPRISE_ADMIN', 'BRANCH_ADMIN', 'HR_MANAGER')")
+    @Transactional
+    @Operation(summary = "Create a disciplinary action")
+    public ResponseEntity<DisciplinaryAction> createDisciplinary(@RequestBody DisciplinaryAction action) {
+        if (action.getCompany() != null && action.getCompany().getId() != null) {
+            action.setCompany(companyRepository.getReferenceById(action.getCompany().getId()));
+        }
+        DisciplinaryAction saved = disciplinaryRepository.save(action);
+
+        notifyDisciplinaryAction(saved, false);
+        return ResponseEntity.ok(saved);
+    }
+
+    @PutMapping("/disciplinary-actions/{id}")
+    @PreAuthorize("hasAnyRole('PLATFORM_SUPER_ADMIN', 'ENTERPRISE_ADMIN', 'BRANCH_ADMIN', 'HR_MANAGER')")
+    @Transactional
+    @Operation(summary = "Update a disciplinary action")
+    public ResponseEntity<DisciplinaryAction> updateDisciplinary(@PathVariable Long id,
+                                                                   @RequestBody DisciplinaryAction updated) {
+        DisciplinaryAction action = disciplinaryRepository.findById(id)
+                .orElseThrow(() -> new ResourceNotFoundException("DisciplinaryAction", id));
+        action.setActionType(updated.getActionType());
+        action.setStartDate(updated.getStartDate());
+        action.setDays(updated.getDays());
+        action.setDescription(updated.getDescription());
+        action.setEmployees(updated.getEmployees());
+        DisciplinaryAction saved = disciplinaryRepository.save(action);
+        notifyDisciplinaryAction(saved, true);
+        return ResponseEntity.ok(saved);
+    }
+
+    @DeleteMapping("/disciplinary-actions/{id}")
+    @PreAuthorize("hasAnyRole('PLATFORM_SUPER_ADMIN', 'ENTERPRISE_ADMIN', 'BRANCH_ADMIN', 'HR_MANAGER')")
+    @Operation(summary = "Delete a disciplinary action")
+    public ResponseEntity<Map<String, String>> deleteDisciplinary(@PathVariable Long id) {
+        disciplinaryRepository.deleteById(id);
+        return ResponseEntity.ok(Map.of("message", "Disciplinary action deleted"));
+    }
+
+    private void notifyDisciplinaryAction(DisciplinaryAction action, boolean isUpdate) {
+        if (action.getEmployees() == null) return;
+        String actionLabel = action.getActionType() != null
+                ? action.getActionType().name().replace("_", " ") : "Action";
+        String notifMsg = isUpdate
+                ? "A disciplinary action against you has been updated: " + actionLabel
+                : "A disciplinary action has been recorded against you: " + actionLabel;
+        String emailSubject = isUpdate ? "Disciplinary Action Updated" : "Disciplinary Action Recorded";
+        String emailBody = "<p>Dear Employee,</p>"
+                + "<p>" + notifMsg + ".</p>"
+                + (action.getDescription() != null
+                        ? "<p><strong>Details:</strong> " + action.getDescription() + "</p>" : "")
+                + (action.getStartDate() != null
+                        ? "<p><strong>Effective Date:</strong> " + action.getStartDate() + "</p>" : "")
+                + "<p>Please contact HR if you have any questions.</p>";
+        Long companyId = action.getCompany() != null ? action.getCompany().getId() : null;
+
+        for (Employee emp : action.getEmployees()) {
+            Employee fullEmp = employeeRepository.findById(emp.getId()).orElse(null);
+            if (fullEmp == null) continue;
+            if (fullEmp.getUser() != null) {
+                try {
+                    notificationService.send(
+                            fullEmp.getUser().getId(),
+                            emailSubject,
+                            notifMsg,
+                            Notification.NotificationType.GENERAL,
+                            "DisciplinaryAction",
+                            action.getId(),
+                            action.getCompany()
+                    );
+                } catch (Exception e) {
+                    log.warn("Failed to send notification for disciplinary action {} to user {}: {}",
+                            action.getId(), fullEmp.getUser().getId(), e.getMessage());
+                }
+            }
+            if (fullEmp.getEmail() != null) {
+                try {
+                    emailService.sendEmail(companyId, fullEmp.getEmail(), emailSubject, emailBody, fullEmp);
+                } catch (Exception e) {
+                    log.warn("Failed to send email for disciplinary action {} to {}: {}",
+                            action.getId(), fullEmp.getEmail(), e.getMessage());
+                }
+            }
+        }
+    }
+
+    // ─── Bonus Points ─────────────────────────────────────────────────────────
+
+    @GetMapping("/employees/{id}/bonus-points")
+    @PreAuthorize("hasAuthority('employee:view')")
+    @Transactional(readOnly = true)
+    @Operation(summary = "Get bonus points for an employee")
+    public ResponseEntity<BonusPoint> getBonusPoints(@PathVariable Long id) {
+        return bonusPointRepository.findByEmployeeId(id)
+                .map(ResponseEntity::ok)
+                .orElse(ResponseEntity.notFound().build());
+    }
+
+    @PutMapping("/employees/{id}/bonus-points")
+    @PreAuthorize("hasAnyRole('PLATFORM_SUPER_ADMIN', 'ENTERPRISE_ADMIN', 'BRANCH_ADMIN', 'HR_MANAGER')")
+    @Transactional
+    @Operation(summary = "Update/create bonus points for an employee")
+    public ResponseEntity<BonusPoint> updateBonusPoints(@PathVariable Long id,
+                                                         @RequestBody BonusPoint updated) {
+        BonusPoint bp = bonusPointRepository.findByEmployeeId(id)
+                .orElseGet(() -> {
+                    BonusPoint n = new BonusPoint();
+                    n.setEmployee(employeeRepository.getReferenceById(id));
+                    if (updated.getCompany() != null && updated.getCompany().getId() != null) {
+                        n.setCompany(companyRepository.getReferenceById(updated.getCompany().getId()));
+                    }
+                    return n;
+                });
+        bp.setPoints(updated.getPoints());
+        bp.setReason(updated.getReason());
+        return ResponseEntity.ok(bonusPointRepository.save(bp));
+    }
+
+    // ─── Employee Tags ────────────────────────────────────────────────────────
+
+    @GetMapping("/employee-tags")
+    @PreAuthorize("hasAuthority('employee:view')")
+    @Transactional(readOnly = true)
+    @Operation(summary = "List employee tags for company")
+    public ResponseEntity<List<EmployeeTag>> listTags(@RequestParam(required = false) Long companyId) {
+        if (companyId != null) return ResponseEntity.ok(employeeTagRepository.findByCompanyId(companyId));
+        var spec = ScopeFilter.<EmployeeTag>byCompany();
+        return ResponseEntity.ok(spec != null ? employeeTagRepository.findAll(spec) : employeeTagRepository.findAll());
+    }
+
+    @PostMapping("/employee-tags")
+    @PreAuthorize("hasAnyRole('PLATFORM_SUPER_ADMIN', 'ENTERPRISE_ADMIN', 'BRANCH_ADMIN', 'HR_MANAGER')")
+    @Transactional
+    @Operation(summary = "Create an employee tag")
+    public ResponseEntity<EmployeeTag> createTag(@RequestBody EmployeeTag tag) {
+        if (tag.getCompany() != null && tag.getCompany().getId() != null) {
+            tag.setCompany(companyRepository.getReferenceById(tag.getCompany().getId()));
+        }
+        return ResponseEntity.ok(employeeTagRepository.save(tag));
+    }
+
+    @PutMapping("/employee-tags/{id}")
+    @PreAuthorize("hasAnyRole('PLATFORM_SUPER_ADMIN', 'ENTERPRISE_ADMIN', 'BRANCH_ADMIN', 'HR_MANAGER')")
+    @Transactional
+    @Operation(summary = "Update an employee tag")
+    public ResponseEntity<EmployeeTag> updateTag(@PathVariable Long id, @RequestBody EmployeeTag updated) {
+        EmployeeTag t = employeeTagRepository.findById(id)
+                .orElseThrow(() -> new ResourceNotFoundException("EmployeeTag", id));
+        t.setTitle(updated.getTitle());
+        t.setColor(updated.getColor());
+        return ResponseEntity.ok(employeeTagRepository.save(t));
+    }
+
+    @DeleteMapping("/employee-tags/{id}")
+    @PreAuthorize("hasAnyRole('PLATFORM_SUPER_ADMIN', 'ENTERPRISE_ADMIN', 'BRANCH_ADMIN', 'HR_MANAGER')")
+    @Operation(summary = "Delete an employee tag")
+    public ResponseEntity<Map<String, String>> deleteTag(@PathVariable Long id) {
+        employeeTagRepository.deleteById(id);
+        return ResponseEntity.ok(Map.of("message", "Tag deleted"));
+    }
+
+    // ─── Employee Notes ───────────────────────────────────────────────────────
+
+    @GetMapping("/employees/{id}/notes")
+    @PreAuthorize("hasAuthority('employee:view')")
+    @Transactional(readOnly = true)
+    @Operation(summary = "List notes for an employee")
+    public ResponseEntity<List<EmployeeNote>> listNotes(@PathVariable Long id) {
+        return ResponseEntity.ok(employeeNoteRepository.findByEmployeeId(id));
+    }
+
+    @PostMapping("/employees/{id}/notes")
+    @PreAuthorize("hasAuthority('employee:edit')")
+    @Transactional
+    @Operation(summary = "Add a note to an employee")
+    public ResponseEntity<EmployeeNote> createNote(@PathVariable Long id, @RequestBody EmployeeNote note) {
+        note.setEmployee(employeeRepository.getReferenceById(id));
+        if (note.getCreatedBy() != null && note.getCreatedBy().getId() != null) {
+            note.setCreatedBy(employeeRepository.getReferenceById(note.getCreatedBy().getId()));
+        }
+        return ResponseEntity.ok(employeeNoteRepository.save(note));
+    }
+
+    @PutMapping("/employees/notes/{noteId}")
+    @PreAuthorize("hasAuthority('employee:edit')")
+    @Transactional
+    @Operation(summary = "Update an employee note")
+    public ResponseEntity<EmployeeNote> updateNote(@PathVariable Long noteId, @RequestBody EmployeeNote updated) {
+        EmployeeNote n = employeeNoteRepository.findById(noteId)
+                .orElseThrow(() -> new ResourceNotFoundException("EmployeeNote", noteId));
+        n.setTitle(updated.getTitle());
+        n.setNote(updated.getNote());
+        return ResponseEntity.ok(employeeNoteRepository.save(n));
+    }
+
+    @DeleteMapping("/employees/notes/{noteId}")
+    @PreAuthorize("hasAuthority('employee:edit')")
+    @Operation(summary = "Delete an employee note")
+    public ResponseEntity<Map<String, String>> deleteNote(@PathVariable Long noteId) {
+        employeeNoteRepository.deleteById(noteId);
+        return ResponseEntity.ok(Map.of("message", "Note deleted"));
+    }
+
+    @GetMapping("/employees/notes/{noteId}/files")
+    @PreAuthorize("hasAuthority('employee:view')")
+    @Operation(summary = "List files for a note")
+    public ResponseEntity<List<NoteFile>> listNoteFiles(@PathVariable Long noteId) {
+        return ResponseEntity.ok(noteFileRepository.findByNoteId(noteId));
+    }
+
+    @PostMapping("/employees/notes/{noteId}/files")
+    @PreAuthorize("hasAuthority('employee:edit')")
+    @Transactional
+    @Operation(summary = "Add a file to a note")
+    public ResponseEntity<NoteFile> addNoteFile(@PathVariable Long noteId, @RequestBody NoteFile file) {
+        file.setNote(employeeNoteRepository.getReferenceById(noteId));
+        return ResponseEntity.ok(noteFileRepository.save(file));
+    }
+
+    @DeleteMapping("/employees/notes/files/{fileId}")
+    @PreAuthorize("hasAuthority('employee:edit')")
+    @Operation(summary = "Delete a note file")
+    public ResponseEntity<Map<String, String>> deleteNoteFile(@PathVariable Long fileId) {
+        noteFileRepository.deleteById(fileId);
+        return ResponseEntity.ok(Map.of("message", "File deleted"));
+    }
+
+    // ─── Action Types ─────────────────────────────────────────────────────────
+
+    @GetMapping("/action-types")
+    @PreAuthorize("hasAuthority('employee:view')")
+    @Transactional(readOnly = true)
+    @Operation(summary = "List disciplinary action types")
+    public ResponseEntity<List<ActionType>> listActionTypes(@RequestParam(required = false) Long companyId) {
+        if (companyId != null) return ResponseEntity.ok(actionTypeRepository.findByCompanyId(companyId));
+        var spec = ScopeFilter.<ActionType>byCompany();
+        return ResponseEntity.ok(spec != null ? actionTypeRepository.findAll(spec) : actionTypeRepository.findAll());
+    }
+
+    @PostMapping("/action-types")
+    @PreAuthorize("hasAnyRole('PLATFORM_SUPER_ADMIN', 'ENTERPRISE_ADMIN', 'BRANCH_ADMIN', 'HR_MANAGER')")
+    @Transactional
+    @Operation(summary = "Create an action type")
+    public ResponseEntity<ActionType> createActionType(@RequestBody ActionType actionType) {
+        if (actionType.getCompany() != null && actionType.getCompany().getId() != null) {
+            actionType.setCompany(companyRepository.getReferenceById(actionType.getCompany().getId()));
+        }
+        return ResponseEntity.ok(actionTypeRepository.save(actionType));
+    }
+
+    @PutMapping("/action-types/{id}")
+    @PreAuthorize("hasAnyRole('PLATFORM_SUPER_ADMIN', 'ENTERPRISE_ADMIN', 'BRANCH_ADMIN', 'HR_MANAGER')")
+    @Transactional
+    @Operation(summary = "Update an action type")
+    public ResponseEntity<ActionType> updateActionType(@PathVariable Long id, @RequestBody ActionType updated) {
+        ActionType at = actionTypeRepository.findById(id)
+                .orElseThrow(() -> new ResourceNotFoundException("ActionType", id));
+        at.setTitle(updated.getTitle());
+        at.setDescription(updated.getDescription());
+        return ResponseEntity.ok(actionTypeRepository.save(at));
+    }
+
+    @DeleteMapping("/action-types/{id}")
+    @PreAuthorize("hasAnyRole('PLATFORM_SUPER_ADMIN', 'ENTERPRISE_ADMIN', 'BRANCH_ADMIN', 'HR_MANAGER')")
+    @Operation(summary = "Delete an action type")
+    public ResponseEntity<Map<String, String>> deleteActionType(@PathVariable Long id) {
+        actionTypeRepository.deleteById(id);
+        return ResponseEntity.ok(Map.of("message", "Action type deleted"));
+    }
+
+    // ─── Employee General Settings ────────────────────────────────────────────
+
+    @GetMapping("/employee-settings")
+    @PreAuthorize("hasAnyRole('PLATFORM_SUPER_ADMIN', 'ENTERPRISE_ADMIN', 'BRANCH_ADMIN', 'HR_MANAGER')")
+    @Transactional(readOnly = true)
+    @Operation(summary = "Get employee module general settings")
+    public ResponseEntity<EmployeeGeneralSetting> getEmployeeSettings(@RequestParam Long companyId) {
+        return employeeGeneralSettingRepository.findByCompanyId(companyId)
+                .map(ResponseEntity::ok)
+                .orElse(ResponseEntity.notFound().build());
+    }
+
+    @PutMapping("/employee-settings")
+    @PreAuthorize("hasAnyRole('PLATFORM_SUPER_ADMIN', 'ENTERPRISE_ADMIN', 'BRANCH_ADMIN', 'HR_MANAGER')")
+    @Transactional
+    @Operation(summary = "Upsert employee module general settings")
+    public ResponseEntity<EmployeeGeneralSetting> upsertEmployeeSettings(@RequestParam Long companyId,
+                                                                          @RequestBody EmployeeGeneralSetting body) {
+        EmployeeGeneralSetting s = employeeGeneralSettingRepository.findByCompanyId(companyId)
+                .orElseGet(() -> {
+                    EmployeeGeneralSetting n = new EmployeeGeneralSetting();
+                    n.setCompany(companyRepository.getReferenceById(companyId));
+                    return n;
+                });
+        s.setShowBadgeId(body.getShowBadgeId());
+        s.setAllowProfileView(body.getAllowProfileView());
+        s.setContractWarningDays(body.getContractWarningDays());
+        return ResponseEntity.ok(employeeGeneralSettingRepository.save(s));
+    }
+
+    // ─── Profile Edit Features ─────────────────────────────────────────────────
+
+    @GetMapping("/employee-profile-features")
+    @PreAuthorize("hasAnyRole('PLATFORM_SUPER_ADMIN', 'ENTERPRISE_ADMIN', 'BRANCH_ADMIN', 'HR_MANAGER')")
+    @Transactional(readOnly = true)
+    @Operation(summary = "List profile edit features for company")
+    public ResponseEntity<List<ProfileEditFeature>> listProfileFeatures(@RequestParam Long companyId) {
+        return ResponseEntity.ok(profileEditFeatureRepository.findByCompanyId(companyId));
+    }
+
+    @PutMapping("/employee-profile-features")
+    @PreAuthorize("hasAnyRole('PLATFORM_SUPER_ADMIN', 'ENTERPRISE_ADMIN', 'BRANCH_ADMIN', 'HR_MANAGER')")
+    @Transactional
+    @Operation(summary = "Upsert a profile edit feature")
+    public ResponseEntity<ProfileEditFeature> upsertProfileFeature(@RequestParam Long companyId,
+                                                                    @RequestBody ProfileEditFeature body) {
+        ProfileEditFeature f = profileEditFeatureRepository
+                .findByCompanyIdAndFeatureName(companyId, body.getFeatureName())
+                .orElseGet(() -> {
+                    ProfileEditFeature n = new ProfileEditFeature();
+                    n.setCompany(companyRepository.getReferenceById(companyId));
+                    n.setFeatureName(body.getFeatureName());
+                    return n;
+                });
+        f.setIsEditable(body.getIsEditable());
+        return ResponseEntity.ok(profileEditFeatureRepository.save(f));
+    }
+
+    // ─── Policies ─────────────────────────────────────────────────────────────
+
+    @GetMapping("/policies")
+    @PreAuthorize("isAuthenticated()")
+    @Transactional(readOnly = true)
+    @Operation(summary = "List policies (company-scoped)")
+    public ResponseEntity<List<Policy>> listPolicies() {
+        AccessScopeContext.ScopeData scope = AccessScopeContext.get();
+        if (scope == null || scope.hasUnrestrictedAccess()) {
+            if (scope != null && scope.getCompanyId() != null) {
+                return ResponseEntity.ok(policyRepository.findByCompanyId(scope.getCompanyId()));
+            }
+            return ResponseEntity.ok(policyRepository.findAll());
+        }
+        List<Long> accessibleIds = scope.getAccessibleCompanyIds();
+        if (accessibleIds.isEmpty()) {
+            return ResponseEntity.ok(List.of());
+        }
+        if (accessibleIds.size() == 1) {
+            return ResponseEntity.ok(policyRepository.findByCompanyId(accessibleIds.get(0)));
+        }
+        return ResponseEntity.ok(policyRepository.findByCompanyIdIn(accessibleIds));
+    }
+
+    @GetMapping("/policies/{id}")
+    @PreAuthorize("isAuthenticated()")
+    @Transactional(readOnly = true)
+    @Operation(summary = "Get policy by ID")
+    public ResponseEntity<Policy> getPolicy(@PathVariable Long id) {
+        Policy policy = policyRepository.findById(id)
+                .orElseThrow(() -> new ResourceNotFoundException("Policy", id));
+        return ResponseEntity.ok(policy);
+    }
+
+    @PostMapping("/policies")
+    @PreAuthorize("hasAnyRole('PLATFORM_SUPER_ADMIN', 'ENTERPRISE_ADMIN', 'BRANCH_ADMIN', 'HR_MANAGER')")
+    @Transactional
+    @Operation(summary = "Create a policy")
+    public ResponseEntity<Policy> createPolicy(@RequestBody Policy policy) {
+        if (policy.getCompanies() != null) {
+            policy.setCompanies(policy.getCompanies().stream()
+                    .filter(c -> c.getId() != null)
+                    .map(c -> companyRepository.getReferenceById(c.getId()))
+                    .toList());
+        }
+        return ResponseEntity.ok(policyRepository.save(policy));
+    }
+
+    @PutMapping("/policies/{id}")
+    @PreAuthorize("hasAnyRole('PLATFORM_SUPER_ADMIN', 'ENTERPRISE_ADMIN', 'BRANCH_ADMIN', 'HR_MANAGER')")
+    @Transactional
+    @Operation(summary = "Update a policy")
+    public ResponseEntity<Policy> updatePolicy(@PathVariable Long id, @RequestBody Policy updated) {
+        Policy policy = policyRepository.findById(id)
+                .orElseThrow(() -> new ResourceNotFoundException("Policy", id));
+        policy.setTitle(updated.getTitle());
+        policy.setBody(updated.getBody());
+        policy.setVisibleToAll(updated.isVisibleToAll());
+        if (updated.getCompanies() != null) {
+            policy.setCompanies(updated.getCompanies().stream()
+                    .filter(c -> c.getId() != null)
+                    .map(c -> companyRepository.getReferenceById(c.getId()))
+                    .toList());
+        }
+        return ResponseEntity.ok(policyRepository.save(policy));
+    }
+
+    @DeleteMapping("/policies/{id}")
+    @PreAuthorize("hasAnyRole('PLATFORM_SUPER_ADMIN', 'ENTERPRISE_ADMIN', 'BRANCH_ADMIN', 'HR_MANAGER')")
+    @Transactional
+    @Operation(summary = "Delete a policy")
+    public ResponseEntity<Map<String, String>> deletePolicy(@PathVariable Long id) {
+        policyRepository.deleteById(id);
+        return ResponseEntity.ok(Map.of("message", "Policy deleted"));
+    }
+
+    @PostMapping("/policies/{id}/employees")
+    @PreAuthorize("hasAnyRole('PLATFORM_SUPER_ADMIN', 'ENTERPRISE_ADMIN', 'BRANCH_ADMIN', 'HR_MANAGER')")
+    @Transactional
+    @Operation(summary = "Assign specific employees to a policy")
+    public ResponseEntity<Policy> assignPolicyEmployees(@PathVariable Long id,
+                                                         @RequestBody List<Long> employeeIds) {
+        Policy policy = policyRepository.findById(id)
+                .orElseThrow(() -> new ResourceNotFoundException("Policy", id));
+        List<com.example.demo.employee.entity.Employee> employees = employeeIds.stream()
+                .map(employeeRepository::getReferenceById)
+                .toList();
+        policy.setSpecificEmployees(employees);
+        return ResponseEntity.ok(policyRepository.save(policy));
+    }
+
+    // ─── Encashment Condition per Employee ────────────────────────────────────
+
+    @GetMapping("/employees/{id}/encashment-condition")
+    @PreAuthorize("hasAuthority('payroll:view')")
+    @Transactional(readOnly = true)
+    @Operation(summary = "Get encashment condition for an employee")
+    public ResponseEntity<EncashmentCondition> getEncashmentCondition(@PathVariable Long id) {
+        return encashmentConditionRepository.findByEmployeeId(id)
+                .map(ResponseEntity::ok)
+                .orElse(ResponseEntity.notFound().build());
+    }
+
+    @PostMapping("/employees/{id}/encashment-condition")
+    @PreAuthorize("hasAnyRole('PLATFORM_SUPER_ADMIN', 'ENTERPRISE_ADMIN', 'BRANCH_ADMIN', 'HR_MANAGER', 'ACCOUNTANT')")
+    @Transactional
+    @Operation(summary = "Create or update encashment condition for an employee")
+    public ResponseEntity<EncashmentCondition> upsertEncashmentCondition(@PathVariable Long id,
+                                                                          @RequestBody EncashmentCondition body) {
+        EncashmentCondition condition = encashmentConditionRepository.findByEmployeeId(id)
+                .orElseGet(() -> {
+                    EncashmentCondition n = new EncashmentCondition();
+                    n.setEmployee(employeeRepository.getReferenceById(id));
+                    return n;
+                });
+        condition.setMaxEncashableDays(body.getMaxEncashableDays());
+        condition.setEligibleLeaveTypes(body.getEligibleLeaveTypes());
+        condition.setIsEligible(body.getIsEligible());
+        condition.setNotes(body.getNotes());
+        return ResponseEntity.ok(encashmentConditionRepository.save(condition));
+    }
+
+    @DeleteMapping("/employees/{id}/encashment-condition")
+    @PreAuthorize("hasAnyRole('PLATFORM_SUPER_ADMIN', 'ENTERPRISE_ADMIN', 'BRANCH_ADMIN', 'HR_MANAGER', 'ACCOUNTANT')")
+    @Transactional
+    @Operation(summary = "Delete encashment condition for an employee")
+    public ResponseEntity<Map<String, String>> deleteEncashmentCondition(@PathVariable Long id) {
+        encashmentConditionRepository.findByEmployeeId(id).ifPresent(encashmentConditionRepository::delete);
+        return ResponseEntity.ok(Map.of("message", "Encashment condition deleted"));
+    }
+}

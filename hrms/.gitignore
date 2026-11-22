@@ -1,0 +1,9 @@
+target/
+media/
+*.log
+*.dump
+.env*
+!.env.example
+application-local.properties
+*.keystore
+*.jks

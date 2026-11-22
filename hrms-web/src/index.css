@@ -1,0 +1,17 @@
+@import "tailwindcss";
+
+/* The upload branch of Create CARR accepts a document directly; manual entry
+   belongs exclusively to the adjacent Add Job Description choice. */
+input[type="file"][accept=".txt,.md,.pdf,.doc,.docx"] ~ label {
+  display: none;
+}
+
+@theme {
+  --color-primary: #5B2ECF;
+  --color-primary-dark: #43209E;
+  --color-accent: #7C4DFF;
+  --color-sidebar: #241252;
+  --color-success: #10B981;
+  --color-warning: #F59E0B;
+  --color-danger: #EF4444;
+}

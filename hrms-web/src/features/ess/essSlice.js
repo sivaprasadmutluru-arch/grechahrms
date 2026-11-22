@@ -1,0 +1,189 @@
+import { createSlice, createAsyncThunk } from '@reduxjs/toolkit'
+import api from '../../services/api'
+
+export const fetchMyProfile = createAsyncThunk('ess/fetchMyProfile', async (_, { rejectWithValue }) => {
+  try {
+    const res = await api.get('/ess/me')
+    return res.data
+  } catch (err) {
+    return rejectWithValue(err.response?.data?.message || 'Failed to fetch profile')
+  }
+})
+
+export const fetchMyLeave = createAsyncThunk('ess/fetchMyLeave', async (_, { rejectWithValue }) => {
+  try {
+    const res = await api.get('/ess/my-leave')
+    return res.data
+  } catch (err) {
+    return rejectWithValue(err.response?.data?.message || 'Failed to fetch leave requests')
+  }
+})
+
+export const fetchEssLeaveTypes = createAsyncThunk('ess/fetchLeaveTypes', async (_, { rejectWithValue }) => {
+  try {
+    const res = await api.get('/ess/leave-types')
+    return res.data
+  } catch (err) {
+    return rejectWithValue(err.response?.data?.message || 'Failed to fetch leave types')
+  }
+})
+
+export const applyLeave = createAsyncThunk('ess/applyLeave', async (params, { rejectWithValue }) => {
+  try {
+    const res = await api.post('/ess/apply-leave', null, { params })
+    return res.data
+  } catch (err) {
+    return rejectWithValue(err.response?.data?.message || 'Failed to apply for leave')
+  }
+})
+
+export const fetchClockStatus = createAsyncThunk('ess/fetchClockStatus', async (_, { rejectWithValue }) => {
+  try {
+    const res = await api.get('/ess/clock-status')
+    return res.data
+  } catch (err) {
+    return rejectWithValue(err.response?.data?.message || 'Failed to fetch clock status')
+  }
+})
+
+export const fetchMyAttendance = createAsyncThunk('ess/fetchMyAttendance', async (params, { rejectWithValue }) => {
+  try {
+    const res = await api.get('/ess/my-attendance', { params })
+    return res.data
+  } catch (err) {
+    return rejectWithValue(err.response?.data?.message || 'Failed to fetch attendance')
+  }
+})
+
+export const checkIn = createAsyncThunk('ess/checkIn', async (data, { rejectWithValue }) => {
+  try {
+    const res = await api.post('/ess/check-in', data || {})
+    return res.data
+  } catch (err) {
+    return rejectWithValue(err.response?.data?.message || 'Check-in failed')
+  }
+})
+
+export const checkOut = createAsyncThunk('ess/checkOut', async (data, { rejectWithValue }) => {
+  try {
+    const res = await api.post('/ess/check-out', data || {})
+    return res.data
+  } catch (err) {
+    return rejectWithValue(err.response?.data?.message || 'Check-out failed')
+  }
+})
+
+export const fetchMyPayslips = createAsyncThunk('ess/fetchMyPayslips', async (_, { rejectWithValue }) => {
+  try {
+    const res = await api.get('/ess/my-payslips')
+    return res.data
+  } catch (err) {
+    return rejectWithValue(err.response?.data?.message || 'Failed to fetch payslips')
+  }
+})
+
+export const fetchMyWorkInfo = createAsyncThunk('ess/fetchMyWorkInfo', async (_, { rejectWithValue }) => {
+  try {
+    const res = await api.get('/ess/my-work-info')
+    return res.data
+  } catch (err) {
+    return rejectWithValue(err.response?.data?.message || 'Failed to fetch work info')
+  }
+})
+
+export const fetchMyBalance = createAsyncThunk('ess/fetchMyBalance', async (_, { rejectWithValue }) => {
+  try {
+    const res = await api.get('/ess/my-balance')
+    return res.data
+  } catch (err) {
+    return rejectWithValue(err.response?.data?.message || 'Failed to fetch leave balance')
+  }
+})
+
+const essSlice = createSlice({
+  name: 'ess',
+  initialState: {
+    profile: null,
+    leaveRequests: [],
+    leaveTypes: [],
+    leaveBalance: [],
+    attendance: [],
+    payslips: [],
+    workInfo: null,
+    clockStatus: null,
+    punchReasonPrompt: null,
+    loading: false,
+    error: null,
+  },
+  reducers: {
+    clearPunchReasonPrompt: (state) => { state.punchReasonPrompt = null },
+  },
+  extraReducers: (builder) => {
+    const pending = (state) => { state.loading = true; state.error = null }
+    const rejected = (state, action) => { state.loading = false; state.error = action.payload }
+
+    builder
+      .addCase('auth/logout', (state) => { state.punchReasonPrompt = null })
+      .addCase(fetchMyProfile.pending, pending)
+      .addCase(fetchMyProfile.fulfilled, (state, action) => { state.loading = false; state.profile = action.payload })
+      .addCase(fetchMyProfile.rejected, rejected)
+
+      .addCase(fetchMyLeave.pending, pending)
+      .addCase(fetchMyLeave.fulfilled, (state, action) => { state.loading = false; state.leaveRequests = action.payload })
+      .addCase(fetchMyLeave.rejected, rejected)
+
+      .addCase(fetchEssLeaveTypes.fulfilled, (state, action) => { state.leaveTypes = action.payload })
+
+      .addCase(applyLeave.pending, pending)
+      .addCase(applyLeave.fulfilled, (state, action) => { state.loading = false; state.leaveRequests = [action.payload, ...state.leaveRequests] })
+      .addCase(applyLeave.rejected, rejected)
+
+      .addCase(fetchMyAttendance.pending, pending)
+      .addCase(fetchMyAttendance.fulfilled, (state, action) => { state.loading = false; state.attendance = action.payload })
+      .addCase(fetchMyAttendance.rejected, rejected)
+
+      .addCase(checkIn.pending, pending)
+      .addCase(checkIn.fulfilled, (state, action) => {
+        state.loading = false
+        if (action.payload.punchReasonType) state.punchReasonPrompt = action.payload
+        const idx = state.attendance.findIndex(a => a.id === action.payload.id)
+        if (idx >= 0) state.attendance[idx] = action.payload
+        else state.attendance = [action.payload, ...state.attendance]
+      })
+      .addCase(checkIn.rejected, rejected)
+
+      .addCase(checkOut.pending, pending)
+      .addCase(checkOut.fulfilled, (state, action) => {
+        state.loading = false
+        if (action.payload.punchReasonType) state.punchReasonPrompt = action.payload
+        const idx = state.attendance.findIndex(a => a.id === action.payload.id)
+        if (idx >= 0) state.attendance[idx] = action.payload
+      })
+      .addCase(checkOut.rejected, rejected)
+
+      .addCase(fetchMyPayslips.pending, pending)
+      .addCase(fetchMyPayslips.fulfilled, (state, action) => { state.loading = false; state.payslips = action.payload })
+      .addCase(fetchMyPayslips.rejected, rejected)
+
+      .addCase(fetchMyWorkInfo.fulfilled, (state, action) => { state.workInfo = action.payload })
+      // 404 means no work-info record exists yet — clear any stale value from a
+      // previous fetch/session instead of leaving misleading data on screen
+      // (e.g. an old "General Shift" name after the shift was actually unassigned).
+      .addCase(fetchMyWorkInfo.rejected, (state) => { state.workInfo = null })
+
+      .addCase(fetchClockStatus.fulfilled, (state, action) => { state.clockStatus = action.payload })
+  },
+})
+
+export const { clearPunchReasonPrompt } = essSlice.actions
+export const selectEssProfile = (state) => state.ess.profile
+export const selectEssLeaveRequests = (state) => state.ess.leaveRequests
+export const selectEssLeaveTypes = (state) => state.ess.leaveTypes
+export const selectEssLeaveBalance = (state) => state.ess.leaveBalance
+export const selectEssAttendance = (state) => state.ess.attendance
+export const selectEssPayslips = (state) => state.ess.payslips
+export const selectEssWorkInfo = (state) => state.ess.workInfo
+export const selectEssClockStatus = (state) => state.ess.clockStatus
+export const selectEssLoading = (state) => state.ess.loading
+
+export default essSlice.reducer

@@ -1,0 +1,667 @@
+package com.example.demo.ess.controller;
+
+import org.springframework.data.domain.Page;
+import com.example.demo.attendance.dto.AttendanceRequest;
+import com.example.demo.attendance.dto.AttendanceResponse;
+import com.example.demo.attendance.entity.Attendance;
+import com.example.demo.attendance.entity.AttendanceActivity;
+import com.example.demo.attendance.repository.AttendanceActivityRepository;
+import com.example.demo.attendance.repository.AttendanceRepository;
+import com.example.demo.attendance.service.AttendanceService;
+import com.example.demo.auth.security.UserPrincipal;
+import com.example.demo.common.exception.ResourceNotFoundException;
+import com.example.demo.common.exception.BadRequestException;
+import com.example.demo.common.service.FileUploadService;
+import com.example.demo.employee.dto.EmployeeResponse;
+import com.example.demo.employee.dto.WorkInfoResponse;
+import com.example.demo.employee.entity.Employee;
+import com.example.demo.employee.entity.ProfileEditFeature;
+import com.example.demo.employee.entity.EmployeeBankDetails;
+import com.example.demo.employee.repository.EmployeeBankDetailsRepository;
+import com.example.demo.employee.repository.EmployeeRepository;
+import com.example.demo.employee.repository.EmployeeWorkInformationRepository;
+import com.example.demo.employee.repository.ProfileEditFeatureRepository;
+import com.example.demo.employee.service.EmployeeService;
+import com.example.demo.leave.dto.AvailableLeaveDTO;
+import com.example.demo.leave.dto.LeaveRequestDTO;
+import com.example.demo.leave.entity.LeaveRequest;
+import com.example.demo.leave.entity.LeaveType;
+import com.example.demo.leave.entity.LeaveRequestFile;
+import com.example.demo.leave.dto.LeaveMapper;
+import com.example.demo.leave.repository.AvailableLeaveRepository;
+import com.example.demo.leave.repository.LeaveRequestRepository;
+import com.example.demo.leave.repository.LeaveRequestFileRepository;
+import com.example.demo.leave.service.LeaveService;
+import com.example.demo.leave.service.LeavePeriodResolver;
+import com.example.demo.payroll.entity.Contract;
+import com.example.demo.payroll.entity.Payslip;
+import com.example.demo.payroll.repository.ContractRepository;
+import com.example.demo.payroll.repository.PayslipRepository;
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.tags.Tag;
+import lombok.RequiredArgsConstructor;
+import org.springframework.format.annotation.DateTimeFormat;
+import org.springframework.http.ResponseEntity;
+import org.springframework.security.access.prepost.PreAuthorize;
+import org.springframework.security.core.Authentication;
+import org.springframework.transaction.annotation.Transactional;
+import org.springframework.web.bind.annotation.*;
+import org.springframework.web.multipart.MultipartFile;
+
+import java.io.IOException;
+import java.time.LocalDate;
+import java.time.LocalTime;
+import java.util.Comparator;
+import java.util.List;
+import java.util.Map;
+import java.util.HashMap;
+
+/**
+ * Employee Self-Service (ESS) endpoints.
+ *
+ * These endpoints are driven exclusively by the logged-in user's identity —
+ * no company scope header or ScopeFilter is involved. Every response is
+ * guaranteed to contain only the current employee's own data.
+ *
+ * Access: any authenticated user who has an employee record.
+ */
+@RestController
+@RequestMapping("/api/ess")
+@RequiredArgsConstructor
+@Tag(name = "ESS (Employee Self-Service)")
+@Transactional
+public class ESSController {
+
+    private static final java.time.ZoneId DUBAI_ZONE = java.time.ZoneId.of("Asia/Dubai");
+
+    private final EmployeeRepository employeeRepository;
+    private final EmployeeWorkInformationRepository workInfoRepository;
+    private final LeaveRequestRepository leaveRequestRepository;
+    private final LeaveRequestFileRepository leaveRequestFileRepository;
+    private final AvailableLeaveRepository availableLeaveRepository;
+    private final AttendanceRepository attendanceRepository;
+    private final AttendanceActivityRepository attendanceActivityRepository;
+    private final AttendanceService attendanceService;
+    private final PayslipRepository payslipRepository;
+    private final LeaveService leaveService;
+    private final ContractRepository contractRepository;
+    private final ProfileEditFeatureRepository profileEditFeatureRepository;
+    private final EmployeeBankDetailsRepository bankDetailsRepository;
+    private final EmployeeService employeeService;
+    private final FileUploadService fileUploadService;
+    private final com.example.demo.employee.service.ReportingManagerService reportingManagers;
+
+    // ── Profile ──────────────────────────────────────────────────────────────
+
+    @GetMapping("/approval-access")
+    @PreAuthorize("isAuthenticated()")
+    public ResponseEntity<Map<String, Object>> approvalAccess(Authentication auth) {
+        Employee employee = resolveEmployee(auth);
+        List<String> roles = auth.getAuthorities().stream()
+                .map(a -> a.getAuthority()).filter(a -> a.startsWith("ROLE_"))
+                .map(a -> a.substring(5)).distinct().toList();
+        return ResponseEntity.ok(Map.of("roles", roles,
+                "isReportingManager", reportingManagers.hasDirectReports(employee),
+                "attendanceRequired", attendanceService.attendanceRequired(employee, LocalDate.now(DUBAI_ZONE))));
+    }
+
+    @GetMapping("/me")
+    @PreAuthorize("isAuthenticated()")
+    @Operation(summary = "Get own employee profile")
+    public ResponseEntity<EmployeeResponse> me(Authentication auth) {
+        Employee emp = resolveEmployee(auth);
+        Contract contract = contractRepository.findByEmployeeId(emp.getId()).stream().findFirst().orElse(null);
+        return ResponseEntity.ok(EmployeeResponse.from(emp, contract));
+    }
+
+    @PutMapping("/me")
+    @PreAuthorize("isAuthenticated()")
+    @Operation(summary = "Update own employee profile (feature-gated)")
+    public ResponseEntity<EmployeeResponse> updateMe(
+            Authentication auth,
+            @RequestBody Map<String, Object> body) {
+        Employee emp = resolveEmployee(auth);
+        Long companyId = emp.getCompany().getId();
+
+        // Build feature map: featureName → isEditable
+        Map<String, Boolean> features = new HashMap<>();
+        profileEditFeatureRepository.findByCompanyId(companyId)
+                .forEach(f -> features.put(f.getFeatureName(), Boolean.TRUE.equals(f.getIsEditable())));
+
+        // Helper: check if a feature is enabled (default true if not configured)
+        java.util.function.Function<String, Boolean> allowed =
+                feat -> features.getOrDefault(feat, true);
+
+        // Feature-gated: phone
+        if (allowed.apply("phone") && body.containsKey("phone"))
+            emp.setPhone((String) body.get("phone"));
+
+        // Feature-gated: address
+        if (allowed.apply("address")) {
+            if (body.containsKey("permanentAddress"))
+                emp.setPermanentAddress((String) body.get("permanentAddress"));
+            if (body.containsKey("currentAddress"))
+                emp.setCurrentAddress((String) body.get("currentAddress"));
+            if (body.containsKey("country"))
+                emp.setCountry((String) body.get("country"));
+            if (body.containsKey("state"))
+                emp.setState((String) body.get("state"));
+            if (body.containsKey("city"))
+                emp.setCity((String) body.get("city"));
+            if (body.containsKey("zip"))
+                emp.setZip((String) body.get("zip"));
+        }
+
+        // Feature-gated: date_of_birth
+        if (allowed.apply("date_of_birth") && body.containsKey("dateOfBirth")) {
+            String dob = (String) body.get("dateOfBirth");
+            emp.setDateOfBirth(dob != null && !dob.isEmpty() ? LocalDate.parse(dob) : null);
+        }
+
+        // Feature-gated: emergency_contact
+        if (allowed.apply("emergency_contact")) {
+            if (body.containsKey("emergencyContactName"))
+                emp.setEmergencyContactName((String) body.get("emergencyContactName"));
+            if (body.containsKey("emergencyContact"))
+                emp.setEmergencyContact((String) body.get("emergencyContact"));
+            if (body.containsKey("emergencyContactRelation"))
+                emp.setEmergencyContactRelation((String) body.get("emergencyContactRelation"));
+        }
+
+        emp = employeeRepository.save(emp);
+        Contract contract = contractRepository.findByEmployeeId(emp.getId()).stream().findFirst().orElse(null);
+        return ResponseEntity.ok(EmployeeResponse.from(emp, contract));
+    }
+
+    @PostMapping(value = "/me/photo", consumes = org.springframework.http.MediaType.MULTIPART_FORM_DATA_VALUE)
+    @PreAuthorize("isAuthenticated()")
+    @Operation(summary = "Upload own profile photo (feature-gated: profile_image)")
+    public ResponseEntity<Map<String, String>> uploadMyPhoto(
+            Authentication auth,
+            @RequestParam("file") MultipartFile file) throws IOException {
+        Employee emp = resolveEmployee(auth);
+        // Gate the upload behind the same "profile_image" feature flag the frontend already checks
+        checkFeature(emp, "profile_image");
+        String path = employeeService.uploadPhoto(emp.getId(), file);
+        return ResponseEntity.ok(Map.of("photoPath", path));
+    }
+
+    @GetMapping("/profile-features")
+    @PreAuthorize("isAuthenticated()")
+    @Operation(summary = "Get profile edit features for own company")
+    public ResponseEntity<List<ProfileEditFeature>> myProfileFeatures(Authentication auth) {
+        Employee emp = resolveEmployee(auth);
+        return ResponseEntity.ok(profileEditFeatureRepository.findByCompanyId(emp.getCompany().getId()));
+    }
+
+    // ── Work Info ─────────────────────────────────────────────────────────────
+
+    @GetMapping("/my-work-info")
+    @PreAuthorize("isAuthenticated()")
+    @Transactional(readOnly = true)
+    @Operation(summary = "Get own work information")
+    public ResponseEntity<WorkInfoResponse> myWorkInfo(Authentication auth) {
+        Employee emp = resolveEmployee(auth);
+        // Employees without an EmployeeWorkInformation row (e.g. onboarded outside the
+        // standard flow) used to 404 here even when Employee-level fields (like shift,
+        // set via shift allocation approval) were populated. Build an empty response to
+        // merge fallbacks into instead of bailing out.
+        WorkInfoResponse res = workInfoRepository.findByEmployeeId(emp.getId())
+                .map(WorkInfoResponse::from)
+                .orElseGet(WorkInfoResponse::new);
+
+        // Attendance uses the employee's assigned shift first. A stale Work
+        // Information shift must not override it on the dashboard.
+        if (emp.getShift() != null) {
+            res.setShiftId(emp.getShift().getId());
+            res.setShiftName(emp.getShift().getName());
+        }
+        // Fall back to Employee-level fields when WorkInformation fields are not set.
+        if (res.getDepartmentId() == null && emp.getDepartment() != null) {
+            res.setDepartmentId(emp.getDepartment().getId());
+            res.setDepartmentName(emp.getDepartment().getName());
+        }
+        if (res.getJobPositionId() == null && emp.getJobPosition() != null) {
+            res.setJobPositionId(emp.getJobPosition().getId());
+            res.setJobPositionName(emp.getJobPosition().getName());
+        }
+        if (res.getJobRoleId() == null && emp.getJobRole() != null) {
+            res.setJobRoleId(emp.getJobRole().getId());
+            res.setJobRoleName(emp.getJobRole().getName());
+        }
+        if (res.getWorkTypeId() == null && emp.getWorkType() != null) {
+            res.setWorkTypeId(emp.getWorkType().getId());
+            res.setWorkTypeName(emp.getWorkType().getName());
+        }
+        // Merge salary from contract if not set in WorkInformation.
+        // Mirrors admin endpoint: check all 4 fields, prefer ACTIVE over DRAFT.
+        if (res.getBasicSalary() == null && res.getHousingAllowance() == null
+                && res.getTransportAllowance() == null && res.getOtherAllowance() == null) {
+            contractRepository.findByEmployeeIdAndContractStatusIn(emp.getId(),
+                    java.util.List.of(com.example.demo.payroll.entity.Contract.ContractStatus.ACTIVE,
+                                      com.example.demo.payroll.entity.Contract.ContractStatus.DRAFT))
+                    .stream()
+                    .min(java.util.Comparator.comparingInt(c ->
+                            c.getContractStatus() == com.example.demo.payroll.entity.Contract.ContractStatus.ACTIVE ? 0 : 1))
+                    .ifPresent(contract -> {
+                        if (contract.getWage() != null) res.setBasicSalary(contract.getWage());
+                        if (contract.getHousingAllowance() != null) res.setHousingAllowance(contract.getHousingAllowance());
+                        if (contract.getTransportAllowance() != null) res.setTransportAllowance(contract.getTransportAllowance());
+                        if (contract.getOtherAllowance() != null) res.setOtherAllowance(contract.getOtherAllowance());
+                        if (contract.getTotalSalary() != null) res.setTotalSalary(contract.getTotalSalary());
+                        if (contract.getEndDate() != null && res.getContractEndDate() == null) res.setContractEndDate(contract.getEndDate());
+                    });
+        }
+        return ResponseEntity.ok(res);
+    }
+
+    // ── Leave ─────────────────────────────────────────────────────────────────
+
+    @GetMapping("/my-leave")
+    @PreAuthorize("isAuthenticated()")
+    @Operation(summary = "Get employee's leave requests")
+    public ResponseEntity<List<LeaveRequestDTO>> myLeave(Authentication auth) {
+        Employee emp = resolveEmployee(auth);
+        List<LeaveRequestDTO> dtos = leaveRequestRepository.findByEmployeeId(emp.getId())
+                .stream()
+                .filter(request -> request.getStatus() != LeaveRequest.LeaveStatus.CANCELLED)
+                .map(LeaveMapper::toDTO).toList();
+        return ResponseEntity.ok(dtos);
+    }
+
+    @PostMapping("/apply-leave")
+    @PreAuthorize("isAuthenticated()")
+    @Operation(summary = "Apply for leave (self)")
+    public ResponseEntity<LeaveRequest> applyLeave(
+            Authentication auth,
+            @RequestParam Long leaveTypeId,
+            @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate startDate,
+            @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate endDate,
+            @RequestParam(required = false, defaultValue = "FULL_DAY") LeaveRequest.LeaveDuration leaveDuration,
+            @RequestParam(required = false) String description,
+            @RequestParam(required = false) MultipartFile certificate) {
+        Employee emp = resolveEmployee(auth);
+        String attachmentPath = null;
+        if (certificate != null && !certificate.isEmpty()) {
+            if (certificate.getSize() > 10L * 1024 * 1024) {
+                throw new BadRequestException("The sick leave certificate must be 10 MB or smaller.");
+            }
+            attachmentPath = fileUploadService.store(certificate, "leave-certificates");
+        }
+        try {
+            LeaveRequest req = leaveService.applyLeave(emp.getId(), leaveTypeId, startDate, endDate, description,
+                    emp.getCompany().getId(), leaveDuration, attachmentPath);
+            if (attachmentPath != null) {
+                LeaveRequestFile file = new LeaveRequestFile();
+                file.setLeaveRequest(req);
+                file.setFilePath(attachmentPath);
+                file.setFileName(certificate.getOriginalFilename());
+                leaveRequestFileRepository.save(file);
+            }
+            return ResponseEntity.ok(req);
+        } catch (RuntimeException ex) {
+            fileUploadService.delete(attachmentPath);
+            throw ex;
+        }
+    }
+
+    // ── Attendance ────────────────────────────────────────────────────────────
+
+    @GetMapping("/my-shift-schedule")
+    @PreAuthorize("isAuthenticated()")
+    @Transactional(readOnly = true)
+    @Operation(summary = "View the current employee's own weekly shift times")
+    public ResponseEntity<AttendanceService.WeeklyShiftSchedule> myShiftSchedule(Authentication auth) {
+        return ResponseEntity.ok(attendanceService.weeklyShiftSchedule(resolveEmployee(auth), LocalDate.now(DUBAI_ZONE)));
+    }
+
+    @GetMapping("/clock-status")
+    @PreAuthorize("isAuthenticated()")
+    @Transactional(readOnly = true)
+    @Operation(summary = "Get own clock-in/online status for today")
+    public ResponseEntity<Map<String, Object>> clockStatus(Authentication auth) {
+        Employee emp = resolveEmployee(auth);
+        LocalDate today = LocalDate.now(DUBAI_ZONE);
+
+        List<AttendanceActivity> activities = attendanceActivityRepository.findByEmployeeIdAndAttendanceDate(emp.getId(), today);
+        AttendanceActivity active = activities.stream()
+                .filter(a -> a.getClockOut() == null)
+                .findFirst()
+                .orElse(null);
+        boolean online = active != null;
+
+        java.time.Instant currentSessionStartUtc = null;
+        if (active != null && active.getInDatetime() != null) {
+            currentSessionStartUtc = active.getInDatetime().atZone(DUBAI_ZONE).toInstant();
+        }
+
+        final java.time.Instant finalStart = currentSessionStartUtc;
+        boolean attendanceRequired = attendanceService.attendanceRequired(emp, today);
+        java.util.Map<String, Object> res = new java.util.HashMap<>();
+        res.put("attendanceRequired", attendanceRequired);
+        res.put("online", online);
+        res.put("checkIn", "");
+        res.put("checkOut", "");
+        res.put("atWorkSecond", 0);
+        res.put("currentSessionStartUtc", finalStart);
+        var recorded = attendanceRepository.findByEmployeeIdAndAttendanceDate(emp.getId(), today);
+        recorded.ifPresent(att -> {
+            res.put("checkIn", att.getCheckIn() != null ? att.getCheckIn().toString() : "");
+            res.put("checkOut", att.getCheckOut() != null ? att.getCheckOut().toString() : "");
+            res.put("atWorkSecond", att.getAtWorkSecond() != null ? att.getAtWorkSecond() : 0);
+        });
+        var shift = recorded.filter(att -> att.getCheckIn() != null && att.getShift() != null)
+                .map(Attendance::getShift).orElseGet(() -> attendanceService.shiftForDate(emp, today));
+        res.put("shiftDate", today.toString());
+        res.put("shiftTimeZone", DUBAI_ZONE.toString());
+        if (shift != null) {
+            res.put("shiftName", shift.getName());
+            res.put("shiftStartTime", shift.getStartTime());
+            res.put("shiftEndTime", shift.getEndTime());
+            boolean overnight = shift.getStartTime() != null && shift.getEndTime() != null
+                    && shift.getEndTime().isBefore(shift.getStartTime());
+            res.put("shiftEndsNextDay", overnight);
+            res.put("shiftDayOff", shift.getWeeklyOffDays() != null
+                    && java.util.Arrays.stream(shift.getWeeklyOffDays().split(","))
+                            .anyMatch(day -> today.getDayOfWeek().name().equalsIgnoreCase(day.trim())));
+            if (shift.getStartTime() != null) {
+                res.put("shiftStartsAt", today.atTime(shift.getStartTime()).atZone(DUBAI_ZONE).toInstant());
+            }
+        }
+        return ResponseEntity.ok(res);
+    }
+
+    @GetMapping("/my-attendance")
+    @PreAuthorize("isAuthenticated()")
+    @Operation(summary = "Get own attendance records")
+    public ResponseEntity<List<AttendanceResponse>> myAttendance(
+            Authentication auth,
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate from,
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate to) {
+        Employee emp = resolveEmployee(auth);
+        LocalDate today = LocalDate.now(DUBAI_ZONE);
+        // A partial range must still be a real filter. Previously, supplying only
+        // one date silently returned every record, which made the mobile date
+        // filter look broken. Clamp future end dates and complete the other side
+        // of the range predictably.
+        LocalDate end = to != null ? (to.isAfter(today) ? today : to) : today;
+        LocalDate start = from != null ? from : (to != null ? to : null);
+        List<Attendance> records = start == null
+                ? attendanceRepository.findByEmployeeId(emp.getId())
+                : (end.isBefore(start)
+                    ? List.of()
+                    : attendanceRepository.findByEmployeeIdAndAttendanceDateBetween(emp.getId(), start, end));
+
+        List<AttendanceActivity> todayActivities = attendanceActivityRepository.findByEmployeeIdAndAttendanceDate(emp.getId(), today);
+        AttendanceActivity active = todayActivities.stream()
+                .filter(a -> a.getClockOut() == null)
+                .findFirst()
+                .orElse(null);
+
+        java.time.Instant currentSessionStartUtc = null;
+        if (active != null && active.getInDatetime() != null) {
+            currentSessionStartUtc = active.getInDatetime().atZone(DUBAI_ZONE).toInstant();
+        }
+
+        final java.time.Instant finalStart = currentSessionStartUtc;
+
+        return ResponseEntity.ok(records.stream().map(att -> {
+            AttendanceResponse res = AttendanceResponse.from(att);
+            if (att.getAttendanceDate().equals(today)) {
+                res.setCurrentSessionStartUtc(finalStart);
+            }
+            return res;
+        }).toList());
+    }
+
+    @GetMapping("/my-attendance/activities")
+    @PreAuthorize("isAuthenticated()")
+    @Transactional(readOnly = true)
+    @Operation(summary = "Get the current employee's individual clock-in and clock-out events for a day")
+    public ResponseEntity<List<AttendanceActivityDTO>> myAttendanceActivities(
+            Authentication auth,
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate date) {
+        Employee emp = resolveEmployee(auth);
+        LocalDate targetDate = date != null ? date : LocalDate.now(DUBAI_ZONE);
+        List<AttendanceActivityDTO> activities = attendanceActivityRepository
+                .findByEmployeeIdAndAttendanceDate(emp.getId(), targetDate)
+                .stream()
+                .sorted(Comparator.comparing(AttendanceActivity::getInDatetime,
+                        Comparator.nullsLast(Comparator.naturalOrder())))
+                .map(activity -> new AttendanceActivityDTO(
+                        activity.getId(), activity.getAttendanceDate(), activity.getClockIn(), activity.getClockOut(),
+                        activity.getInDatetime(), activity.getOutDatetime(),
+                        activity.getClockType() == null ? null : activity.getClockType().name(),
+                        activity.getClockInAddress(), activity.getClockOutAddress()))
+                .toList();
+        return ResponseEntity.ok(activities);
+    }
+
+    public record AttendanceActivityDTO(
+            Long id, LocalDate attendanceDate, LocalTime clockIn, LocalTime clockOut,
+            java.time.LocalDateTime inDatetime, java.time.LocalDateTime outDatetime,
+            String clockType, String clockInAddress, String clockOutAddress) {}
+
+    @PostMapping("/check-in")
+    @PreAuthorize("isAuthenticated()")
+    @Operation(summary = "Self check-in for today, optionally with the device's GPS coordinates")
+    public ResponseEntity<AttendanceResponse> checkIn(
+            Authentication auth,
+            @RequestBody(required = false) Map<String, Object> body) {
+        Employee emp = resolveEmployee(auth);
+        Double latitude = toDouble(body, "latitude");
+        Double longitude = toDouble(body, "longitude");
+        Double accuracy = toDouble(body, "accuracy");
+        String source = toSource(body);
+        return ResponseEntity.ok(attendanceService.clockIn(emp.getId(), emp.getCompany().getId(), latitude, longitude, accuracy, source));
+    }
+
+    @PostMapping("/check-out")
+    @PreAuthorize("isAuthenticated()")
+    @Operation(summary = "Self check-out for today, optionally with the device's GPS coordinates")
+    public ResponseEntity<?> checkOut(
+            Authentication auth,
+            @RequestBody(required = false) Map<String, Object> body) {
+        Employee emp = resolveEmployee(auth);
+        LocalDate today = LocalDate.now(DUBAI_ZONE);
+        java.util.Optional<Attendance> opt = attendanceRepository.findByEmployeeIdAndAttendanceDate(emp.getId(), today);
+        if (opt.isPresent()) {
+            Double latitude = toDouble(body, "latitude");
+            Double longitude = toDouble(body, "longitude");
+            Double accuracy = toDouble(body, "accuracy");
+            String source = toSource(body);
+            return ResponseEntity.ok(attendanceService.clockOut(opt.get().getId(), latitude, longitude, accuracy, source));
+        } else {
+            return ResponseEntity.badRequest().body("No attendance record found for today.");
+        }
+    }
+
+    private Double toDouble(Map<String, Object> body, String key) {
+        if (body == null) return null;
+        Object value = body.get(key);
+        return value instanceof Number number ? number.doubleValue() : null;
+    }
+
+    private String toSource(Map<String, Object> body) {
+        Object value = body == null ? null : body.get("source");
+        return value instanceof String s && !s.isBlank() ? s : "web";
+    }
+
+    @GetMapping("/my-attendance/export")
+    @PreAuthorize("isAuthenticated()")
+    @Transactional(readOnly = true)
+    @Operation(summary = "Export own attendance records to Excel")
+    public void exportMyAttendance(
+            Authentication auth,
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate from,
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate to,
+            jakarta.servlet.http.HttpServletResponse response) throws IOException {
+        Employee emp = resolveEmployee(auth);
+        attendanceService.exportToExcel(
+                emp.getCompany().getId(),
+                List.of(emp.getId()),
+                from, to, response);
+    }
+
+    @GetMapping("/my-attendance/full-view")
+    @PreAuthorize("isAuthenticated()")
+    @Transactional(readOnly = true)
+    @Operation(summary = "Get own attendance records (full view with virtual rows)")
+    public ResponseEntity<Page<AttendanceResponse>> myAttendanceFullView(
+            Authentication auth,
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate from,
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate to,
+            @RequestParam(required = false) String status,
+            @org.springframework.data.web.PageableDefault(size = 20) org.springframework.data.domain.Pageable pageable) {
+        Employee emp = resolveEmployee(auth);
+        return ResponseEntity.ok(attendanceService.getFullView(
+                emp.getCompany().getId(), from, to, null, emp.getId(), status, pageable));
+    }
+
+    @GetMapping("/my-validation-requests")
+    @PreAuthorize("isAuthenticated()")
+    @Transactional(readOnly = true)
+    @Operation(summary = "Get own IRREGULAR attendance records (eligible for regularisation)")
+    public ResponseEntity<List<AttendanceResponse>> myValidationRequests(Authentication auth) {
+        Employee emp = resolveEmployee(auth);
+        List<AttendanceResponse> records = attendanceRepository.findByEmployeeId(emp.getId()).stream()
+                .filter(a -> a.getAttendanceStatus() == com.example.demo.attendance.entity.Attendance.AttendanceQualityStatus.IRREGULAR)
+                .map(AttendanceResponse::from)
+                .toList();
+        return ResponseEntity.ok(records);
+    }
+
+    @PostMapping("/my-attendance/{id}/request-validation")
+    @PreAuthorize("isAuthenticated()")
+    @Transactional
+    @Operation(summary = "Request validation for own attendance record")
+    public ResponseEntity<AttendanceResponse> requestValidation(
+            @PathVariable Long id, Authentication auth) {
+        Employee emp = resolveEmployee(auth);
+        Attendance att = attendanceRepository.findById(id)
+                .orElseThrow(() -> new ResourceNotFoundException("Attendance", id));
+        if (!att.getEmployee().getId().equals(emp.getId())) {
+            return ResponseEntity.status(403).build();
+        }
+        // Validation request is now a regularisation request — employee should use
+        // POST /api/attendance/regularisation. This endpoint is kept for backwards
+        // compatibility but no longer flips removed fields.
+        return ResponseEntity.ok(AttendanceResponse.from(att));
+    }
+
+    // ── Payslips ──────────────────────────────────────────────────────────────
+
+    @GetMapping("/my-payslips")
+    @PreAuthorize("isAuthenticated()")
+    @Operation(summary = "Get own payslips — Approved/Paid only (PAY-006 req #13); Draft/Pending stay HR/Accountant-only")
+    public ResponseEntity<List<Payslip>> myPayslips(Authentication auth) {
+        Employee emp = resolveEmployee(auth);
+        return ResponseEntity.ok(payslipRepository.findByEmployeeId(emp.getId()).stream()
+                .filter(p -> p.getStatus() == Payslip.PayslipStatus.CONFIRMED || p.getStatus() == Payslip.PayslipStatus.PAID)
+                .toList());
+    }
+
+    // ── Leave balance (own) ───────────────────────────────────────────────────
+
+    @GetMapping("/my-balance")
+    @PreAuthorize("isAuthenticated()")
+    @Transactional(readOnly = true)
+    @Operation(summary = "Get own leave balance per leave type")
+    public ResponseEntity<List<AvailableLeaveDTO>> myBalance(Authentication auth) {
+        Employee emp = resolveEmployee(auth);
+        List<AvailableLeaveDTO> balance = availableLeaveRepository.findByEmployeeId(emp.getId()).stream()
+                .map(al -> {
+                    double used = 0.0;
+                    if (al.getLeaveType() != null) {
+                        LeavePeriodResolver.Period period = LeavePeriodResolver.containing(
+                                al.getLeaveType(), java.time.LocalDate.now());
+                        Double value = leaveRequestRepository.sumApprovedDaysForPeriod(
+                                emp.getId(), al.getLeaveType().getId(), period.start(), period.end());
+                        used = value != null ? value : 0.0;
+                    }
+                    return LeaveMapper.toDTO(al, used);
+                })
+                .toList();
+        return ResponseEntity.ok(balance);
+    }
+
+    // ── Leave types (for apply-leave form) ───────────────────────────────────
+
+    @GetMapping("/leave-types")
+    @PreAuthorize("isAuthenticated()")
+    @Operation(summary = "Get available leave types for own company")
+    public ResponseEntity<List<LeaveType>> leaveTypes(Authentication auth) {
+        Employee emp = resolveEmployee(auth);
+        return ResponseEntity.ok(leaveService.getLeaveTypes());
+    }
+
+    // ── Bank Details (self-service) ───────────────────────────────────────────
+
+    @GetMapping("/bank-details")
+    @PreAuthorize("isAuthenticated()")
+    @Transactional(readOnly = true)
+    @Operation(summary = "Get own bank details")
+    public ResponseEntity<EmployeeBankDetails> myBankDetails(Authentication auth) {
+        Employee emp = resolveEmployee(auth);
+        return bankDetailsRepository.findByEmployeeId(emp.getId())
+                .map(ResponseEntity::ok)
+                .orElse(ResponseEntity.notFound().build());
+    }
+
+    @PostMapping("/bank-details")
+    @PreAuthorize("isAuthenticated()")
+    @Operation(summary = "Add own bank details (requires bank_details feature enabled)")
+    public ResponseEntity<EmployeeBankDetails> createMyBankDetails(Authentication auth,
+                                                                     @RequestBody EmployeeBankDetails bankDetails) {
+        Employee emp = resolveEmployee(auth);
+        checkFeature(emp, "bank_details");
+        bankDetails.setEmployee(emp);
+        return ResponseEntity.ok(bankDetailsRepository.save(bankDetails));
+    }
+
+    @PutMapping("/bank-details")
+    @PreAuthorize("isAuthenticated()")
+    @Operation(summary = "Update own bank details (requires bank_details feature enabled)")
+    public ResponseEntity<EmployeeBankDetails> updateMyBankDetails(Authentication auth,
+                                                                     @RequestBody EmployeeBankDetails updated) {
+        Employee emp = resolveEmployee(auth);
+        checkFeature(emp, "bank_details");
+        EmployeeBankDetails bd = bankDetailsRepository.findByEmployeeId(emp.getId())
+                .orElseGet(() -> {
+                    EmployeeBankDetails n = new EmployeeBankDetails();
+                    n.setEmployee(emp);
+                    return n;
+                });
+        bd.setBankName(updated.getBankName());
+        bd.setAccountNumber(updated.getAccountNumber());
+        bd.setBranch(updated.getBranch());
+        bd.setCountry(updated.getCountry());
+        bd.setState(updated.getState());
+        bd.setCity(updated.getCity());
+        bd.setIfscCode(updated.getIfscCode());
+        bd.setSwiftCode(updated.getSwiftCode());
+        bd.setAddress(updated.getAddress());
+        return ResponseEntity.ok(bankDetailsRepository.save(bd));
+    }
+
+    private void checkFeature(Employee emp, String featureName) {
+        profileEditFeatureRepository.findByCompanyId(emp.getCompany().getId()).stream()
+                .filter(f -> featureName.equals(f.getFeatureName()))
+                .findFirst()
+                .ifPresent(f -> {
+                    if (!Boolean.TRUE.equals(f.getIsEditable())) {
+                        throw new org.springframework.security.access.AccessDeniedException(
+                                "Feature '" + featureName + "' is disabled by your administrator.");
+                    }
+                });
+    }
+
+    // ── Helper ────────────────────────────────────────────────────────────────
+
+    private Employee resolveEmployee(Authentication auth) {
+        UserPrincipal principal = (UserPrincipal) auth.getPrincipal();
+        return employeeRepository.findByUserId(principal.getId())
+                .orElseThrow(() -> new ResourceNotFoundException(
+                        "No employee record linked to your user account. Contact your HR admin."));
+    }
+}

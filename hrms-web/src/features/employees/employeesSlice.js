@@ -1,0 +1,314 @@
+import { createSlice, createAsyncThunk } from '@reduxjs/toolkit'
+import api from '../../services/api'
+
+export const fetchAll = createAsyncThunk('employees/fetchAll', async (params, { rejectWithValue }) => {
+  try {
+    const { companyIdOverride, ...queryParams } = params || {}
+    const headers = companyIdOverride ? { 'X-Company-Id': companyIdOverride } : {}
+    const res = await api.get('/employees', { params: queryParams, headers })
+    return res.data
+  } catch (err) {
+    return rejectWithValue(err.response?.data?.message || 'Failed to fetch employees')
+  }
+})
+
+// Platform Super Admin only — fetches employees across ALL organization schemas
+export const fetchAllGlobal = createAsyncThunk('employees/fetchAllGlobal', async (params, { rejectWithValue }) => {
+  try {
+    const res = await api.get('/employees/global', { params })
+    return res.data
+  } catch (err) {
+    return rejectWithValue(err.response?.data?.message || 'Failed to fetch global employees')
+  }
+})
+
+// Company-scoped Super Admin / Account Manager: all employees only from the
+// companies explicitly assigned to the signed-in user (never platform-wide).
+export const fetchAllAssigned = createAsyncThunk('employees/fetchAllAssigned', async (params, { rejectWithValue }) => {
+  try {
+    const res = await api.get('/employees/assigned', { params })
+    return res.data
+  } catch (err) {
+    return rejectWithValue(err.response?.data?.message || 'Failed to fetch assigned-company employees')
+  }
+})
+
+export const create = createAsyncThunk('employees/create', async (data, { rejectWithValue }) => {
+  try {
+    const res = await api.post('/employees', data)
+    return res.data
+  } catch (err) {
+    const d = err.response?.data
+    const msg = d?.message || (d?.errors ? Object.values(d.errors).join(', ') : null) || 'Failed to create employee'
+    return rejectWithValue(msg)
+  }
+})
+
+export const update = createAsyncThunk('employees/update', async ({ id, data }, { rejectWithValue }) => {
+  try {
+    const res = await api.put(`/employees/${id}`, data)
+    return res.data
+  } catch (err) {
+    return rejectWithValue(err.response?.data?.message || 'Failed to update employee')
+  }
+})
+
+// companyId is optional but important: employee ids are only unique WITHIN an org's own
+// schema, not globally, so deleting a row surfaced by the cross-org "All Companies" view
+// must say which org it belongs to — otherwise the backend looks in whatever schema
+// happens to be ambient (often none, in All-Companies mode) and 404s with a misleading
+// "Employee not found with id: X" even though the employee genuinely exists elsewhere.
+export const archiveEmployee = createAsyncThunk('employees/archive', async ({ id, companyId } = {}, { rejectWithValue }) => {
+  try {
+    await api.post(`/employees/${id}/archive`, null, { params: { companyId } })
+    return id
+  } catch (err) {
+    return rejectWithValue(err.response?.data?.message || 'Failed to archive employee')
+  }
+})
+
+export const restoreEmployee = createAsyncThunk('employees/restore', async ({ id, companyId } = {}, { rejectWithValue }) => {
+  try {
+    await api.post(`/employees/${id}/restore`, null, { params: { companyId } })
+    return id
+  } catch (err) {
+    return rejectWithValue(err.response?.data?.message || 'Failed to restore employee')
+  }
+})
+
+// PLATFORM_SUPER_ADMIN only — irreversible, deletes the employee and all dependent records.
+// companyId — see archiveEmployee() above.
+export const hardDelete = createAsyncThunk('employees/hardDelete', async ({ id, companyId } = {}, { rejectWithValue }) => {
+  try {
+    await api.delete(`/employees/${id}/permanent`, { params: { companyId } })
+    return id
+  } catch (err) {
+    return rejectWithValue(err.response?.data?.message || 'Failed to permanently delete employee')
+  }
+})
+
+export const uploadPhoto = createAsyncThunk('employees/uploadPhoto', async ({ id, file }, { rejectWithValue }) => {
+  try {
+    const formData = new FormData()
+    formData.append('file', file)
+    const res = await api.post(`/employees/${id}/photo`, formData)
+    return res.data
+  } catch (err) {
+    return rejectWithValue(err.response?.data?.message || 'Failed to upload photo')
+  }
+})
+
+export const fetchOrgChart = createAsyncThunk('employees/fetchOrgChart', async (params, { rejectWithValue }) => {
+  try { const res = await api.get('/employees/org-chart', { params }); return res.data }
+  catch (err) { return rejectWithValue(err.response?.data?.message || 'Failed to fetch org chart') }
+})
+export const bulkArchiveEmployees = createAsyncThunk('employees/bulkArchive', async (ids, { rejectWithValue }) => {
+  try { const res = await api.post('/employees/bulk-archive', ids); return res.data }
+  catch (err) { return rejectWithValue(err.response?.data?.message || 'Failed to bulk archive') }
+})
+export const fetchEmployeeDashboard = createAsyncThunk('employees/fetchDashboard', async (params, { rejectWithValue }) => {
+  try { const res = await api.get('/employees/dashboard', { params }); return res.data }
+  catch (err) { return rejectWithValue(err.response?.data?.message || 'Failed to fetch dashboard') }
+})
+
+export const exportWorkInfo = createAsyncThunk('employees/exportWorkInfo', async (companyId, { rejectWithValue }) => {
+  try {
+    const res = await api.get('/employees/work-info/export', { params: { companyId }, responseType: 'blob' })
+    const url = URL.createObjectURL(new Blob([res.data]))
+    const link = document.createElement('a')
+    link.href = url
+    link.setAttribute('download', 'work-info.xlsx')
+    document.body.appendChild(link)
+    link.click()
+    link.remove()
+    URL.revokeObjectURL(url)
+  } catch (err) {
+    return rejectWithValue(err.response?.data?.message || 'Failed to export work info')
+  }
+})
+
+export const importWorkInfo = createAsyncThunk('employees/importWorkInfo', async ({ companyId, file }, { rejectWithValue }) => {
+  try {
+    const formData = new FormData()
+    formData.append('file', file)
+    const res = await api.post('/employees/work-info/import', formData, { params: { companyId } })
+    return res.data
+  } catch (err) {
+    return rejectWithValue(err.response?.data?.message || 'Failed to import work info')
+  }
+})
+
+export const downloadImportTemplate = createAsyncThunk('employees/downloadImportTemplate', async (companyId, { rejectWithValue }) => {
+  try {
+    const res = await api.get('/employees/import/template', { responseType: 'blob', params: { companyId } })
+    const url = URL.createObjectURL(new Blob([res.data]))
+    const link = document.createElement('a')
+    link.href = url
+    link.setAttribute('download', 'employee_import_template.xlsx')
+    document.body.appendChild(link)
+    link.click()
+    link.remove()
+    URL.revokeObjectURL(url)
+  } catch (err) {
+    return rejectWithValue(err.response?.data?.message || 'Failed to download template')
+  }
+})
+
+export const importEmployees = createAsyncThunk('employees/importEmployees', async ({ companyId, file }, { rejectWithValue }) => {
+  try {
+    console.log('[importEmployees] starting', { companyId, fileName: file?.name, fileSize: file?.size })
+    const formData = new FormData()
+    formData.append('file', file)
+    const res = await api.post('/employees/import', formData, { params: { companyId } })
+    console.log('[importEmployees] response', res.data)
+    return res.data
+  } catch (err) {
+    console.error('[importEmployees] error', {
+      status: err.response?.status,
+      data: err.response?.data,
+      message: err.message,
+    })
+    return rejectWithValue(err.response?.data?.message || 'Failed to import employees')
+  }
+})
+
+export const bulkUpdateEmployees = createAsyncThunk('employees/bulkUpdate', async (data, { rejectWithValue }) => {
+  try {
+    const res = await api.post('/employees/bulk-update', data)
+    return res.data
+  } catch (err) {
+    return rejectWithValue(err.response?.data?.message || 'Failed to bulk update employees')
+  }
+})
+
+export const fetchEncashmentCondition = createAsyncThunk('employees/fetchEncashmentCondition', async ({ id, companyId }, { rejectWithValue }) => {
+  try {
+    const cfg = companyId ? { headers: { 'X-Company-Id': companyId } } : {}
+    const res = await api.get(`/employees/${id}/encashment-condition`, cfg)
+    return res.data
+  } catch (err) { return rejectWithValue(err.response?.data?.message || 'Failed to fetch encashment condition') }
+})
+
+export const upsertEncashmentCondition = createAsyncThunk('employees/upsertEncashmentCondition', async ({ id, data, companyId }, { rejectWithValue }) => {
+  try {
+    const cfg = companyId ? { headers: { 'X-Company-Id': companyId } } : {}
+    const res = await api.post(`/employees/${id}/encashment-condition`, data, cfg)
+    return res.data
+  } catch (err) { return rejectWithValue(err.response?.data?.message || 'Failed to save encashment condition') }
+})
+
+export const deleteEncashmentCondition = createAsyncThunk('employees/deleteEncashmentCondition', async ({ id, companyId }, { rejectWithValue }) => {
+  try {
+    const cfg = companyId ? { headers: { 'X-Company-Id': companyId } } : {}
+    await api.delete(`/employees/${id}/encashment-condition`, cfg)
+    return id
+  } catch (err) { return rejectWithValue(err.response?.data?.message || 'Failed to delete encashment condition') }
+})
+
+export const fetchOnlineStatus = createAsyncThunk('employees/fetchOnlineStatus', async (companyId, { rejectWithValue }) => {
+  try {
+    const params = companyId != null ? { companyId } : {}
+    const res = await api.get('/employees/online-status', { params })
+    return res.data
+  } catch (err) { return rejectWithValue(err.response?.data?.message || 'Failed to fetch online status') }
+})
+
+const employeesSlice = createSlice({
+  name: 'employees',
+  initialState: {
+    data: [],
+    pagination: { page: 0, size: 20, total: 0 },
+    loading: false,
+    error: null,
+    orgChart: [],
+    employeeDashboard: null,
+    encashmentCondition: null,
+    onlineEmployeeIds: [],
+  },
+  reducers: {},
+  extraReducers: (builder) => {
+    builder
+      .addCase(fetchAll.pending, (state) => { state.loading = true; state.error = null })
+      .addCase(fetchAll.fulfilled, (state, action) => {
+        state.loading = false
+        state.data = action.payload.content || action.payload
+        if (action.payload.totalElements !== undefined) {
+          state.pagination.total = action.payload.totalElements
+          state.pagination.page = action.payload.number ?? state.pagination.page
+          state.pagination.size = action.payload.size ?? state.pagination.size
+        }
+      })
+      .addCase(fetchAll.rejected, (state, action) => { state.loading = false; state.error = action.payload })
+
+      .addCase(fetchAllGlobal.pending, (state) => { state.loading = true; state.error = null })
+      .addCase(fetchAllGlobal.fulfilled, (state, action) => {
+        state.loading = false
+        state.data = action.payload.content || action.payload
+        if (action.payload.totalElements !== undefined) {
+          state.pagination.total = action.payload.totalElements
+          state.pagination.page = action.payload.number ?? state.pagination.page
+          state.pagination.size = action.payload.size ?? state.pagination.size
+        }
+      })
+      .addCase(fetchAllGlobal.rejected, (state, action) => { state.loading = false; state.error = action.payload })
+      .addCase(fetchAllAssigned.pending, (state) => { state.loading = true; state.error = null })
+      .addCase(fetchAllAssigned.fulfilled, (state, action) => {
+        state.loading = false
+        state.data = action.payload.content || action.payload
+        if (action.payload.totalElements !== undefined) {
+          state.pagination.total = action.payload.totalElements
+          state.pagination.page = action.payload.number ?? state.pagination.page
+          state.pagination.size = action.payload.size ?? state.pagination.size
+        }
+      })
+      .addCase(fetchAllAssigned.rejected, (state, action) => { state.loading = false; state.error = action.payload })
+
+      .addCase(create.pending, (state) => { state.loading = true; state.error = null })
+      .addCase(create.fulfilled, (state, action) => { state.loading = false; state.data.unshift(action.payload) })
+      .addCase(create.rejected, (state, action) => { state.loading = false; state.error = action.payload })
+
+      .addCase(update.pending, (state) => { state.loading = true; state.error = null })
+      .addCase(update.fulfilled, (state, action) => {
+        state.loading = false
+        const idx = state.data.findIndex(e => e.id === action.payload.id)
+        if (idx !== -1) state.data[idx] = action.payload
+      })
+      .addCase(update.rejected, (state, action) => { state.loading = false; state.error = action.payload })
+
+      .addCase(archiveEmployee.pending, (state) => { state.loading = true; state.error = null })
+      .addCase(archiveEmployee.fulfilled, (state, action) => {
+        state.loading = false
+        state.data = state.data.filter(e => e.id !== action.payload)
+      })
+      .addCase(archiveEmployee.rejected, (state, action) => { state.loading = false; state.error = action.payload })
+
+      .addCase(hardDelete.pending, (state) => { state.loading = true; state.error = null })
+      .addCase(hardDelete.fulfilled, (state, action) => {
+        state.loading = false
+        state.data = state.data.filter(e => e.id !== action.payload)
+      })
+      .addCase(hardDelete.rejected, (state, action) => { state.loading = false; state.error = action.payload })
+
+      .addCase(uploadPhoto.pending, (state) => { state.loading = true; state.error = null })
+      .addCase(uploadPhoto.fulfilled, (state, action) => {
+        state.loading = false
+        const idx = state.data.findIndex(e => e.id === action.payload.id)
+        if (idx !== -1) state.data[idx] = action.payload
+      })
+      .addCase(uploadPhoto.rejected, (state, action) => { state.loading = false; state.error = action.payload })
+      .addCase(fetchOrgChart.fulfilled, (state, action) => { state.orgChart = action.payload })
+      .addCase(fetchEmployeeDashboard.fulfilled, (state, action) => { state.employeeDashboard = action.payload })
+      .addCase(fetchEncashmentCondition.fulfilled, (state, action) => { state.encashmentCondition = action.payload })
+      .addCase(upsertEncashmentCondition.fulfilled, (state, action) => { state.encashmentCondition = action.payload })
+      .addCase(deleteEncashmentCondition.fulfilled, (state) => { state.encashmentCondition = null })
+      .addCase(fetchOnlineStatus.fulfilled, (state, action) => {
+        state.onlineEmployeeIds = action.payload.onlineEmployeeIds || []
+      })
+  },
+})
+
+export const selectAll = (state) => state.employees.data
+export const selectLoading = (state) => state.employees.loading
+export const selectPagination = (state) => state.employees.pagination
+export const selectOnlineEmployeeIds = (state) => state.employees.onlineEmployeeIds
+export default employeesSlice.reducer

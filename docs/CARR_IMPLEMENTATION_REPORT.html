@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>CARR Implementation Plan for Grecha HRMS</title>
+  <style>
+    :root{color-scheme:light dark;--bg:#f5f7fb;--card:#fff;--ink:#172033;--muted:#657086;--line:#e5e9f2;--brand:#5546f3;--brand2:#7c4dff;--soft:#f0efff;--good:#087f5b;--warn:#b05a00;--bad:#c92a2a}
+    @media(prefers-color-scheme:dark){:root{--bg:#10131c;--card:#181d29;--ink:#edf0f7;--muted:#a9b1c3;--line:#2b3344;--soft:#24223f}}
+    *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.55 Inter,Segoe UI,Arial,sans-serif}.page{max-width:1120px;margin:auto;padding:44px 28px 72px}.hero{background:linear-gradient(135deg,#241866,#5546f3 62%,#8c5cff);color:#fff;border-radius:22px;padding:38px 42px;box-shadow:0 18px 42px #31229128}.eyebrow{font-size:12px;font-weight:800;letter-spacing:.12em;text-transform:uppercase;opacity:.8}.hero h1{font-size:38px;line-height:1.12;margin:10px 0}.hero p{max-width:780px;font-size:17px;opacity:.9;margin:0}.meta{display:flex;gap:18px;flex-wrap:wrap;margin-top:24px;font-size:13px;opacity:.85}section{margin-top:36px}h2{font-size:25px;margin:0 0 16px}h3{font-size:18px;margin:22px 0 8px}.card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:24px;box-shadow:0 6px 20px #1c234008}.summary{display:grid;grid-template-columns:repeat(2,1fr);gap:14px}.summary .card{border-top:4px solid var(--brand)}.summary strong{display:block;margin-bottom:5px}.callout{background:var(--soft);border-radius:14px;padding:18px 20px;border:1px solid #6f63ff35}.grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:14px}.grid2{display:grid;grid-template-columns:repeat(2,1fr);gap:14px}.pill{display:inline-block;padding:4px 9px;border-radius:999px;background:var(--soft);color:var(--brand);font-weight:700;font-size:12px}.status{font-weight:750}.reuse{color:var(--good)}.extend{color:var(--warn)}.new{color:var(--bad)}table{width:100%;border-collapse:separate;border-spacing:0;background:var(--card);border:1px solid var(--line);border-radius:14px;overflow:hidden}th,td{text-align:left;vertical-align:top;padding:12px 14px;border-bottom:1px solid var(--line)}th{background:var(--soft);font-size:12px;text-transform:uppercase;letter-spacing:.05em}tr:last-child td{border-bottom:0}ul,ol{padding-left:21px}li{margin:5px 0}.flow{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.step{padding:10px 13px;border-radius:10px;background:var(--card);border:1px solid var(--line);font-weight:700}.arrow{color:var(--brand);font-weight:900}.phase{position:relative;padding-left:24px;margin:18px 0}.phase:before{content:"";position:absolute;left:4px;top:8px;bottom:-20px;width:2px;background:var(--line)}.phase:last-child:before{bottom:8px}.dot{position:absolute;left:-1px;top:7px;width:12px;height:12px;background:var(--brand);border-radius:50%}.small{font-size:13px;color:var(--muted)}code{background:var(--soft);padding:2px 5px;border-radius:5px}.score{font-size:28px;color:var(--brand);font-weight:850}.footer{margin-top:42px;padding-top:18px;border-top:1px solid var(--line);color:var(--muted);font-size:12px}@media(max-width:760px){.page{padding:20px 14px 48px}.hero{padding:26px 22px}.hero h1{font-size:29px}.summary,.grid2,.grid3{grid-template-columns:1fr}table{display:block;overflow-x:auto}}
+  </style>
+</head>
+<body><main class="page">
+  <header class="hero">
+    <div class="eyebrow">Grecha.ai HRMS · Product and technical assessment</div>
+    <h1>CARR Implementation Plan</h1>
+    <p>How to add Clarity, Accountability, Results and Rewards to the existing HRMS without duplicating employee, organization or performance data.</p>
+    <div class="meta"><span>Prepared: August 24, 2026</span><span>Audience: Product owners, HR leaders and engineering</span><span>Status: Recommended architecture</span></div>
+  </header>
+
+  <section><h2>Executive Summary</h2><div class="summary">
+    <div class="card"><strong>CARR means Clarity · Accountability · Results · Rewards.</strong> It is a structured agreement for each role or employee: why the role exists, what it owns, how success is measured and how strong results are recognized.</div>
+    <div class="card"><strong>Grecha HRMS can support it without a second employee system.</strong> Reuse current employees, departments, job roles, reporting managers, performance cycles, objectives/key results, feedback, bonus points, roles and tenant schemas.</div>
+    <div class="card"><strong>The main missing piece is a versioned CARR record and workflow.</strong> New entities are needed for CARR templates, responsibilities, ownership, KPI targets, approval stages, reviews, rewards, history and dashboard aggregates.</div>
+    <div class="card"><strong>Implement it in controlled releases.</strong> Start with role library, employee CARR, responsibilities, KPIs and approval/publishing. Add reviews and rewards next; add AI generation only after enough approved CARR data exists.</div>
+  </div></section>
+
+  <section><h2>What CARR does in practical HR terms</h2>
+    <div class="grid2">
+      <div class="card"><span class="pill">C · Clarity</span><h3>Define the role</h3><p>Purpose, job description, scope, reporting line, expected behaviours, authority and boundaries. An employee should understand what the company expects and what is outside the role.</p></div>
+      <div class="card"><span class="pill">A · Accountability</span><h3>Name the owner</h3><p>Every responsibility has one accountable owner, collaborators, evidence requirements and review frequency. This prevents duplicate ownership and responsibilities with nobody accountable.</p></div>
+      <div class="card"><span class="pill">R · Results</span><h3>Measure outcomes</h3><p>Weighted KPIs and OKRs define target, actual value, unit, period, data source and status. Results should measure outcomes—not only tasks completed.</p></div>
+      <div class="card"><span class="pill">R · Rewards</span><h3>Recognize achievement</h3><p>Review scores can feed bonus points, recognition, variable-pay recommendations or development actions. Rewards remain governed and approved, never automatically paid from an unreviewed score.</p></div>
+    </div>
+    <div class="callout"><strong>Core distinction:</strong> a job description describes a position; a CARR makes that position operational and measurable for a specific employee and period.</div>
+  </section>
+
+  <section><h2>Your HRMS already provides the foundation</h2>
+    <table><thead><tr><th>Capability</th><th>Current evidence</th><th>CARR decision</th></tr></thead><tbody>
+      <tr><td>Employee and organization context</td><td>Employee, company, department, job position, job role and reporting manager already exist.</td><td class="status reuse">Reuse directly</td></tr>
+      <tr><td>Role library</td><td>Job roles and positions exist, but contain mainly names and hierarchy.</td><td class="status extend">Extend with purpose, scope and competencies</td></tr>
+      <tr><td>Performance periods</td><td>Performance cycles already have company, start/end dates and status.</td><td class="status reuse">Reuse as review periods</td></tr>
+      <tr><td>Objectives and progress</td><td>Objectives, employee objectives, key-result progress and feedback APIs exist.</td><td class="status extend">Link to CARR KPI assignments</td></tr>
+      <tr><td>Rewards</td><td>Employee bonus points and bonus settings already exist.</td><td class="status extend">Add governed reward recommendations</td></tr>
+      <tr><td>Approvals and permissions</td><td>Roles, user groups and configurable approval managers exist.</td><td class="status extend">Create a CARR-specific staged workflow</td></tr>
+      <tr><td>CARR definition and versions</td><td>No versioned CARR aggregate currently exists.</td><td class="status new">Build new</td></tr>
+      <tr><td>CARR analytics and health scoring</td><td>No CARR coverage, clarity, accountability or risk model exists.</td><td class="status new">Build new</td></tr>
+    </tbody></table>
+  </section>
+
+  <section><h2>Recommended product structure</h2><div class="grid3">
+    <div class="card"><h3>1. Role Library</h3><p>Reusable role templates containing purpose, job description, competencies, default responsibilities, KPIs and review cadence.</p></div>
+    <div class="card"><h3>2. Employee CARR</h3><p>A period-specific copy assigned to one employee. Managers tailor targets without changing the master role template.</p></div>
+    <div class="card"><h3>3. Responsibility Register</h3><p>Accountable owner, collaborators, evidence, frequency, priority and overlap warnings.</p></div>
+    <div class="card"><h3>4. KPI / OKR</h3><p>Target, actual, unit, weight, direction, due date, source, confidence and RAG status.</p></div>
+    <div class="card"><h3>5. Approvals and Reviews</h3><p>Draft → manager → department head → HR → approved → published, followed by periodic check-ins.</p></div>
+    <div class="card"><h3>6. Rewards Framework</h3><p>Recognition or bonus recommendation based on approved results, with caps and HR/payroll approval.</p></div>
+  </div></section>
+
+  <section><h2>Workflow that should be implemented</h2>
+    <div class="flow"><span class="step">Role template</span><span class="arrow">→</span><span class="step">Assign employee</span><span class="arrow">→</span><span class="step">Set responsibilities & KPIs</span><span class="arrow">→</span><span class="step">Submit</span><span class="arrow">→</span><span class="step">Manager / HR approvals</span><span class="arrow">→</span><span class="step">Publish</span><span class="arrow">→</span><span class="step">Review</span><span class="arrow">→</span><span class="step">Reward decision</span></div>
+    <h3>Recommended states</h3><p><code>DRAFT</code>, <code>SUBMITTED</code>, <code>MANAGER_REVIEW</code>, <code>DEPT_HEAD_REVIEW</code>, <code>HR_REVIEW</code>, <code>APPROVED</code>, <code>PUBLISHED</code>, <code>RETURNED</code>, <code>ARCHIVED</code>.</p>
+    <p>Every transition must record actor, timestamp, comment and before/after version. Published CARRs are immutable; edits create a new version.</p>
+  </section>
+
+  <section><h2>Data model required</h2>
+    <table><thead><tr><th>New table</th><th>Purpose and important fields</th></tr></thead><tbody>
+      <tr><td><code>carr_role_templates</code></td><td>Company, job role, title, purpose, scope, competencies, active version.</td></tr>
+      <tr><td><code>carr_records</code></td><td>Employee, template, cycle, manager, version, status, effective dates, published timestamp, aggregate scores.</td></tr>
+      <tr><td><code>carr_responsibilities</code></td><td>Statement, accountable employee, collaborators, priority, frequency, evidence, weight.</td></tr>
+      <tr><td><code>carr_kpis</code></td><td>Name, type (KPI/OKR), target, actual, unit, direction, weight, period, data source, risk status.</td></tr>
+      <tr><td><code>carr_approval_steps</code></td><td>CARR, sequence, approver role/employee, status, decision, comment and timestamps.</td></tr>
+      <tr><td><code>carr_reviews</code></td><td>Review period, reviewer, employee self-rating, manager rating, evidence, final rating and sign-off.</td></tr>
+      <tr><td><code>carr_reward_rules</code></td><td>Company policy, score bands, point/bonus/recognition outcome, caps and approval requirement.</td></tr>
+      <tr><td><code>carr_reward_recommendations</code></td><td>Review, calculated proposal, adjusted proposal, reason, approval and payroll reference.</td></tr>
+      <tr><td><code>carr_audit_events</code></td><td>Append-only history for field changes, status transitions, imports and AI suggestions.</td></tr>
+    </tbody></table>
+    <p class="small">All tables should use the existing tenant schema model and company scope. No cross-organization CARR data may be queried without super-admin authorization.</p>
+  </section>
+
+  <section><h2>Scoring and dashboard definitions</h2>
+    <div class="grid2"><div class="card"><div class="score">0–100</div><h3>CARR Health Score</h3><p>Recommended initial formula: Clarity 25%, Accountability 25%, Results 35%, Rewards/Review readiness 15%. Make weights company-configurable.</p></div><div class="card"><h3>Avoid a misleading score</h3><p>Health is a governance-quality score, not the employee’s performance rating. Keep the performance result separate from document completeness and approval timeliness.</p></div></div>
+    <table><thead><tr><th>Dashboard measure</th><th>Definition</th></tr></thead><tbody>
+      <tr><td>CARR coverage</td><td>Active employees with a published CARR ÷ active employees eligible for CARR.</td></tr>
+      <tr><td>Approval aging</td><td>Open approval steps older than the company SLA.</td></tr>
+      <tr><td>Reviews due / overdue</td><td>Published CARRs whose next review date is within the warning window / past due.</td></tr>
+      <tr><td>KPIs at risk</td><td>Active weighted KPIs below the expected progress curve or explicitly marked at risk.</td></tr>
+      <tr><td>Responsibility gaps</td><td>Required responsibilities with no accountable owner.</td></tr>
+      <tr><td>Responsibility overlaps</td><td>Near-duplicate responsibilities assigned as accountable to multiple employees in the same scope.</td></tr>
+    </tbody></table>
+  </section>
+
+  <section><h2>API and frontend boundaries</h2>
+    <div class="grid2">
+      <div class="card"><h3>Backend module</h3><p>Create <code>com.example.demo.carr</code> with entities, repositories, services, DTOs, controllers, validators, dashboard projections and tenant-aware authorization. Use endpoints under <code>/api/carr</code>.</p><p>Core APIs: templates, records, responsibilities, KPIs, submit/return/approve/publish, reviews, rewards, dashboard, analytics, reports and import/export.</p></div>
+      <div class="card"><h3>Frontend module</h3><p>Create <code>src/features/carr</code> with CARR Dashboard, Employee CARR, Role Library, Job Descriptions, Responsibilities, KPI/OKR, Approval Queue, Reviews, Rewards, Analytics, Reports and Configuration.</p><p>Reuse current page shell, company selector, tables, modals, permissions, API client and chart library.</p></div>
+    </div>
+    <h3>Permissions</h3><table><thead><tr><th>Role</th><th>Access</th></tr></thead><tbody>
+      <tr><td>Employee</td><td>View published CARR, update evidence/actuals where permitted, self-review and acknowledge.</td></tr>
+      <tr><td>Manager</td><td>Create/assign, set targets, review direct reports, return or submit recommendations.</td></tr>
+      <tr><td>Department head</td><td>Approve department CARRs, inspect coverage, ownership gaps and KPI risks.</td></tr>
+      <tr><td>HR admin</td><td>Templates, policies, final HR review, publish, archive, reports and reward governance.</td></tr>
+      <tr><td>Super admin</td><td>Platform configuration and organization-scoped support; tenant data access must be explicitly audited.</td></tr>
+    </tbody></table>
+  </section>
+
+  <section><h2>Phased implementation</h2>
+    <div class="phase"><span class="dot"></span><h3>Phase 0 — Product rules and prototype</h3><p>Confirm terminology, approval chain, score definitions, reward policy, eligible employees and review cadence. Produce clickable screens and API contracts.</p></div>
+    <div class="phase"><span class="dot"></span><h3>Phase 1 — Minimum usable CARR</h3><p>Role templates, employee CARR, responsibilities, weighted KPIs, draft/submit/approve/publish, permissions, audit events, Excel import/export and a basic coverage dashboard.</p></div>
+    <div class="phase"><span class="dot"></span><h3>Phase 2 — Reviews and rewards</h3><p>Self/manager reviews, evidence, calibration, reminders, overdue queues, reward rules and approved bonus-point integration.</p></div>
+    <div class="phase"><span class="dot"></span><h3>Phase 3 — Analytics and integrations</h3><p>Department adoption, KPI risk, responsibility gaps/overlaps, scheduled reports, notification automation and payroll reward handoff.</p></div>
+    <div class="phase"><span class="dot"></span><h3>Phase 4 — AI assistant</h3><p>Generate draft CARR from a job description, suggest measurable KPIs, detect duplication and summarize risks. AI output must remain a suggestion requiring human approval.</p></div>
+  </section>
+
+  <section><h2>Recommended next steps</h2><ol>
+    <li>Approve the business definition: CARR is a versioned employee/role agreement, not another employee profile.</li>
+    <li>Select one pilot organization, 2–3 departments and one review cycle.</li>
+    <li>Finalize the approval chain and identify who may publish or alter reward rules.</li>
+    <li>Build Phase 1 behind a tenant feature flag so current HRMS behavior remains untouched.</li>
+    <li>Migrate no legacy performance data automatically; link existing objectives only after mapping rules are validated.</li>
+    <li>Measure pilot coverage, approval time, overdue reviews, responsibility gaps and user adoption before enabling rewards or AI.</li>
+  </ol></section>
+
+  <section><h2>Further questions to decide before coding</h2><ul>
+    <li>Is one CARR created per employee, per job role, or both? Recommendation: template per role, versioned instance per employee and cycle.</li>
+    <li>Who is the final publisher: HR, department head or both?</li>
+    <li>Can employees edit KPI actuals, or must values come from managers/integrations?</li>
+    <li>Are rewards bonus points only, monetary recommendations, recognition, or all three?</li>
+    <li>Should branch managers see only their branch or the full company hierarchy?</li>
+  </ul></section>
+
+  <section><h2>Caveats and assumptions</h2><ul>
+    <li>The screenshot is treated as a product concept, not evidence of an existing CARR industry standard or finished Grecha module.</li>
+    <li>No production database counts were queried; therefore adoption values shown in the reference screenshot are not used in this report.</li>
+    <li>Existing PMS entities provide useful foundations, but schema and authorization tests are required before linking production objectives to CARR KPIs.</li>
+    <li>AI generation should not be part of the first production release because approved examples, privacy rules and evaluation criteria are not yet established.</li>
+  </ul></section>
+
+  <div class="footer">Evidence reviewed: Grecha HRMS backend employee, base, auth and PMS modules; frontend employee, role and performance features; supplied CARR dashboard concept image. This report proposes architecture and rollout—it does not claim that the CARR module is already implemented.</div>
+</main></body></html>

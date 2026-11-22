@@ -1,0 +1,85 @@
+import { useDispatch, useSelector } from 'react-redux'
+import { selectUser, selectRoles, selectIsAuthenticated, logout } from '../features/auth/authSlice'
+import { ROLES } from '../config/constants'
+
+export default function useAuth() {
+  const dispatch = useDispatch()
+  const user = useSelector(selectUser)
+  const roles = useSelector(selectRoles)
+  const isAuthenticated = useSelector(selectIsAuthenticated)
+  const selectedCompanyId = useSelector(s => s.auth.selectedCompanyId)
+  const enterpriseBranchFilter = useSelector(s => s.auth.enterpriseBranchFilter)
+
+  const hasRole = (...checkRoles) => checkRoles.some(r => roles.includes(r))
+
+  // Role predicates — ordered by hierarchy
+  const isPlatformAdmin    = () => hasRole(ROLES.PLATFORM_SUPER_ADMIN)
+  const isSuperAdmin       = () => hasRole(ROLES.SUPER_ADMIN)
+  const isAccountManager   = () => hasRole(ROLES.ACCOUNT_MANAGER)
+  const isCompanyAdmin     = () => hasRole(ROLES.SUPER_ADMIN, ROLES.COMPANY_ADMIN, ROLES.ENTERPRISE_ADMIN)
+  const isCompanyManager   = () => hasRole(ROLES.COMPANY_MANAGER, ROLES.BRANCH_ADMIN)
+  const isEnterpriseAdmin  = () => isAccountManager() || isCompanyAdmin()
+  const isBranchAdmin      = () => isCompanyManager()
+  const isHRManager        = () => hasRole(ROLES.HR_MANAGER)
+  const isAccountant       = () => hasRole(ROLES.ACCOUNTS_MANAGER, ROLES.ACCOUNTANT)
+  const isDeptManager      = () => hasRole(ROLES.DEPARTMENT_MANAGER)
+  const isTeamLead         = () => hasRole(ROLES.TEAM_LEAD)
+  const isEmployee         = () => hasRole(ROLES.EMPLOYEE)
+
+  // Convenience groupings
+  const isHeadOfficeLevel  = () => isPlatformAdmin() || isEnterpriseAdmin()
+  const isBranchLevel      = () => isBranchAdmin() || isHRManager() || isAccountant()
+  const isManagement       = () => isHeadOfficeLevel() || isBranchAdmin()
+
+  // The user's access scope comes from the backend; fall back to role-based defaults
+  const getScope = () => {
+    if (user?.accessScope) return user.accessScope
+    if (isPlatformAdmin())   return 'ENTERPRISE'
+    if (isEnterpriseAdmin()) return 'ENTERPRISE'
+    if (isBranchAdmin())     return 'BRANCH'
+    if (isHRManager())       return 'BRANCH'
+    if (isAccountant())      return 'BRANCH'
+    if (isDeptManager())     return 'DEPARTMENT'
+    if (isTeamLead())        return 'DEPARTMENT'
+    return 'SELF'
+  }
+
+  const handleLogout = () => dispatch(logout())
+
+  // The "active" company/branch for scoped data fetching.
+  // Platform admin: selectedCompanyId (from top nav company switcher) or user's own company
+  // Enterprise admin: enterpriseBranchFilter (from top nav branch switcher) or head office
+  // Others: user's company
+  const effectiveCompanyId = (() => {
+    if (isPlatformAdmin() || isSuperAdmin() || isAccountManager())
+      return selectedCompanyId ? Number(selectedCompanyId) : null
+    if (isEnterpriseAdmin())
+      return enterpriseBranchFilter ? Number(enterpriseBranchFilter) : (user?.companyId || null)
+    return user?.companyId || null
+  })()
+
+  return {
+    user,
+    roles,
+    isAuthenticated,
+    effectiveCompanyId,
+    hasRole,
+    isPlatformAdmin,
+    isSuperAdmin,
+    isAccountManager,
+    isCompanyAdmin,
+    isCompanyManager,
+    isEnterpriseAdmin,
+    isBranchAdmin,
+    isHRManager,
+    isAccountant,
+    isDeptManager,
+    isTeamLead,
+    isEmployee,
+    isHeadOfficeLevel,
+    isBranchLevel,
+    isManagement,
+    getScope,
+    logout: handleLogout,
+  }
+}

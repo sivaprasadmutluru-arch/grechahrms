@@ -25,6 +25,8 @@ import java.time.LocalTime;
 @Setter
 public class Attendance extends BaseEntity {
 
+    public static final String AUTO_CHECKOUT_SOURCE = "auto_checkout";
+
     // ─── Enums ────────────────────────────────────────────────────────────────
 
     /** Quality of the attendance record — set automatically on checkout. */

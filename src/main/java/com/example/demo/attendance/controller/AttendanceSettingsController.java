@@ -40,6 +40,7 @@ public class AttendanceSettingsController {
     private final BatchAttendanceRepository batchAttendanceRepository;
     private final WorkRecordRepository workRecordRepository;
     private final AttendanceService attendanceService;
+    private final AutoCheckoutSettings autoCheckoutSettings;
 
     // ─── Grace Time ───────────────────────────────────────────────────────────
 
@@ -101,12 +102,16 @@ public class AttendanceSettingsController {
     }
 
     private com.example.demo.base.entity.Company selectedGraceCompany(Long targetCompanyId) {
+        return selectedAttendanceCompany(targetCompanyId, "grace times");
+    }
+
+    private com.example.demo.base.entity.Company selectedAttendanceCompany(Long targetCompanyId, String setting) {
         var scope = com.example.demo.common.context.AccessScopeContext.get();
         Long companyId = scope == null ? null : scope.getFilterCompanyId() != null
                 ? scope.getFilterCompanyId() : scope.getCompanyId();
-        if (companyId == null) throw new com.example.demo.common.exception.BadRequestException("Select a company to manage grace times");
+        if (companyId == null) throw new com.example.demo.common.exception.BadRequestException("Select a company to manage " + setting);
         if (targetCompanyId != null && !targetCompanyId.equals(companyId))
-            throw new com.example.demo.common.exception.BadRequestException("The selected company changed. Reopen the grace time form.");
+            throw new com.example.demo.common.exception.BadRequestException("The selected company changed. Reopen the " + setting + " settings.");
         if (scope.isSelfScope() || scope.getScope() == com.example.demo.auth.entity.UserRole.AccessScope.DEPARTMENT
                 || !scope.canAccess(companyId))
             throw new org.springframework.security.access.AccessDeniedException("The selected company is outside your attendance settings scope");
@@ -238,6 +243,33 @@ public class AttendanceSettingsController {
         setting.setTimeRunner(updated.getTimeRunner());
         setting.setEnableCheckIn(updated.getEnableCheckIn());
         return ResponseEntity.ok(generalSettingRepository.save(setting));
+    }
+
+    public record AutoCheckoutConfiguration(boolean enabled, boolean headOffice, int graceMinutes) {}
+    public record AutoCheckoutUpdate(@jakarta.validation.constraints.NotNull Boolean enabled) {}
+
+    @GetMapping("/auto-checkout")
+    @PreAuthorize("hasAuthority('attendance:view')")
+    @Transactional(readOnly = true)
+    public AutoCheckoutConfiguration autoCheckout(@RequestParam Long targetCompanyId) {
+        var company = selectedAttendanceCompany(targetCompanyId, "automatic checkout");
+        Long headOfficeId = company.isHeadOffice() ? company.getId() : company.getParentCompanyId();
+        return new AutoCheckoutConfiguration(autoCheckoutSettings.enabled(headOfficeId), company.isHeadOffice(),
+                AttendanceService.AUTO_CHECKOUT_GRACE_MINUTES);
+    }
+
+    @PutMapping("/auto-checkout")
+    @PreAuthorize("hasAnyRole('PLATFORM_SUPER_ADMIN', 'SUPER_ADMIN', 'COMPANY_ADMIN', 'ENTERPRISE_ADMIN')")
+    @Transactional
+    public AutoCheckoutConfiguration updateAutoCheckout(@RequestParam Long targetCompanyId,
+                                                         @jakarta.validation.Valid @RequestBody AutoCheckoutUpdate update) {
+        var company = selectedAttendanceCompany(targetCompanyId, "automatic checkout");
+        if (!company.isHeadOffice()) {
+            throw new org.springframework.security.access.AccessDeniedException(
+                    "Automatic checkout is managed from the organization's head office");
+        }
+        autoCheckoutSettings.setEnabled(company.getId(), update.enabled());
+        return new AutoCheckoutConfiguration(update.enabled(), true, AttendanceService.AUTO_CHECKOUT_GRACE_MINUTES);
     }
 
     // ─── Allowed IPs ──────────────────────────────────────────────────────────

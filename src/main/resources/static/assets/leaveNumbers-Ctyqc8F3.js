@@ -1,0 +1,1 @@
+var e=new Intl.NumberFormat(`en-US`,{useGrouping:!1,minimumFractionDigits:2,maximumFractionDigits:2});function t(t){if(t==null||typeof t==`string`&&!t.trim())return`—`;let n=Number(t);return Number.isFinite(n)?e.format(Math.abs(n)<.005?0:n):`—`}export{t};

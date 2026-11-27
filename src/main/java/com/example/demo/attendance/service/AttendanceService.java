@@ -47,7 +47,10 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.io.IOException;
+import java.io.ByteArrayOutputStream;
 import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.ZonedDateTime;
 import java.time.Instant;
 import java.time.LocalTime;
 import java.time.format.TextStyle;
@@ -83,6 +86,9 @@ public class AttendanceService {
     private final com.example.demo.geofencing.service.GeoFencingService geoFencingService;
     private final AttendanceAddressResolver attendanceAddressResolver;
     private final EmployeeAttendancePolicyService attendancePolicies;
+    private final AutoCheckoutSettings autoCheckoutSettings;
+
+    public static final int AUTO_CHECKOUT_GRACE_MINUTES = 30;
 
     public boolean attendanceRequired(Employee employee, LocalDate date) {
         return attendancePolicies.required(employee, date);
@@ -189,6 +195,7 @@ public class AttendanceService {
             }
         }
         employees = new ArrayList<>(visibleEmployees.values());
+        Map<Long, ShiftSchedule> employeeShifts = assignedShifts(employees);
         Map<String, Attendance> attMap = new HashMap<>();
         for (Attendance a : attendances) {
             if (a.getEmployee() != null) {
@@ -238,7 +245,7 @@ public class AttendanceService {
                     LeaveRequest matchedLeave = leaveMap.getOrDefault(emp.getId(), List.of()).stream()
                             .filter(lr -> !finalCursor.isBefore(lr.getStartDate()) && !finalCursor.isAfter(lr.getEndDate()))
                             .findFirst().orElse(null);
-                    boolean isWeekend = isDefaultWeekend(emp.getShift(), cursor);
+                    boolean isWeekend = isWeekOff(employeeShifts.get(emp.getId()), cursor);
                     String ds = matchedLeave != null ? "ON_LEAVE"
                               : holidayDates.contains(cursor) ? "HOLIDAY"
                               : isWeekend ? "WEEK_OFF"
@@ -361,6 +368,13 @@ public class AttendanceService {
      * OT is auto-finalised — no manual approval step required.
      */
     private void computeOvertimeFields(Attendance att, double worked) {
+        if (Attendance.AUTO_CHECKOUT_SOURCE.equals(att.getClockOutSource())) {
+            setPayableOvertime(att, 0);
+            att.setReviewableOvertimeSeconds(0);
+            att.setUnapprovedWorkSeconds(0);
+            att.setCheckoutNeedsReview(true);
+            return;
+        }
         var policy = overtimePolicy(att);
         boolean review = OvertimeReview.applies(att, policy);
         Double minimum = att.getMinimumHour();
@@ -525,15 +539,31 @@ public class AttendanceService {
             case MISSING_PUNCH, WORKING_HOURS_CORRECTION -> {
                 if (request.getRequestedCheckIn()  != null) att.setCheckIn(request.getRequestedCheckIn());
                 if (request.getRequestedCheckOut() != null) {
-                    att.setCheckOut(request.getRequestedCheckOut());
+                    LocalTime time = request.getRequestedCheckOut();
                     var shift = att.getShift();
                     boolean overnight = shift != null && shift.getStartTime() != null && shift.getEndTime() != null
                             && shift.getEndTime().isBefore(shift.getStartTime())
-                            && att.getCheckIn() != null && att.getCheckOut().isBefore(att.getCheckIn());
-                    if (att.getAttendanceDate() != null)
-                        att.setCheckOutDate(overnight ? att.getAttendanceDate().plusDays(1) : att.getAttendanceDate());
-                    if (att.getCheckOutDate() != null)
-                        att.setCheckOutUtc(att.getCheckOutDate().atTime(att.getCheckOut()).atZone(DUBAI_ZONE).toInstant());
+                            && att.getCheckIn() != null && time.isBefore(att.getCheckIn());
+                    if (att.getAttendanceDate() != null) {
+                        var date = overnight ? att.getAttendanceDate().plusDays(1) : att.getAttendanceDate();
+                        var corrected = date.atTime(time);
+                        if (Attendance.AUTO_CHECKOUT_SOURCE.equals(att.getClockOutSource())) {
+                            automaticActivityForReplacement(att, attendanceActivityRepository
+                                    .findByEmployeeIdAndAttendanceDate(att.getEmployee().getId(), att.getAttendanceDate()),
+                                    corrected).ifPresent(activity -> {
+                                        activity.setClockOut(time);
+                                        activity.setClockOutDate(date);
+                                        activity.setOutDatetime(corrected);
+                                        activity.setClockType(AttendanceActivity.ClockType.MANUAL);
+                                        attendanceActivityRepository.save(activity);
+                                    });
+                            att.setClockOutSource("manual");
+                            att.setCheckoutNeedsReview(false);
+                        }
+                        att.setCheckOutDate(date);
+                        att.setCheckOutUtc(corrected.atZone(DUBAI_ZONE).toInstant());
+                    }
+                    att.setCheckOut(time);
                 }
                 att.setRegularisationStatus(Attendance.RegularisationStatus.REGULARISED);
                 attendanceRepository.save(att);
@@ -600,55 +630,34 @@ public class AttendanceService {
         List<AttendanceActivity> activities = attendanceActivityRepository.findByEmployeeIdAndAttendanceDate(
                 att.getEmployee().getId(), att.getAttendanceDate());
 
-        long totalSeconds = 0;
-        boolean calculateFromActivities = false;
-
-        if (!activities.isEmpty()) {
-            LocalTime minIn = null;
-            LocalTime maxOut = null;
-            for (AttendanceActivity a : activities) {
-                if (a.getClockIn() != null) {
-                    if (minIn == null || a.getClockIn().isBefore(minIn)) minIn = a.getClockIn();
-                }
-                if (a.getClockOut() != null) {
-                    if (maxOut == null || a.getClockOut().isAfter(maxOut)) maxOut = a.getClockOut();
+        LocalDate date = att.getAttendanceDate();
+        LocalDateTime firstIn = null;
+        LocalDateTime lastOut = null;
+        long sessionSeconds = 0;
+        for (AttendanceActivity activity : activities) {
+            if (activity.getClockIn() == null) continue;
+            LocalDateTime start = activityStart(activity, date);
+            if (firstIn == null || start.isBefore(firstIn)) firstIn = start;
+            if (activity.getClockOut() == null) continue;
+            LocalDateTime end = activity.getOutDatetime();
+            if (end == null) {
+                if (activity.getClockOutDate() != null) {
+                    end = activity.getClockOutDate().atTime(activity.getClockOut());
+                } else {
+                    end = start.toLocalDate().atTime(activity.getClockOut());
+                    if (end.isBefore(start)) end = end.plusDays(1);
                 }
             }
-
-            // If the Attendance checkIn/checkOut exactly match the bounds of activities,
-            // we assume it has NOT been manually overridden, so we calculate from activities (deducting breaks).
-            if (minIn != null && maxOut != null &&
-                att.getCheckIn().equals(minIn) && att.getCheckOut().equals(maxOut)) {
-                calculateFromActivities = true;
-            }
+            if (lastOut == null || end.isAfter(lastOut)) lastOut = end;
+            sessionSeconds += Math.max(0, ChronoUnit.SECONDS.between(start, end));
         }
 
-        if (calculateFromActivities) {
-            for (AttendanceActivity a : activities) {
-                if (a.getClockIn() != null && a.getClockOut() != null) {
-                    LocalTime in = a.getClockIn();
-                    LocalTime out = a.getClockOut();
-                    long seconds;
-                    if (out.isBefore(in)) {
-                        seconds = ChronoUnit.SECONDS.between(in, LocalTime.MAX) + 1
-                                + ChronoUnit.SECONDS.between(LocalTime.MIN, out);
-                    } else {
-                        seconds = ChronoUnit.SECONDS.between(in, out);
-                    }
-                    totalSeconds += seconds;
-                }
-            }
-        } else {
-            // Calculate strictly from checkIn to checkOut
-            LocalTime in = att.getCheckIn();
-            LocalTime out = att.getCheckOut();
-            if (out.isBefore(in)) {
-                totalSeconds = ChronoUnit.SECONDS.between(in, LocalTime.MAX) + 1
-                        + ChronoUnit.SECONDS.between(LocalTime.MIN, out);
-            } else {
-                totalSeconds = ChronoUnit.SECONDS.between(in, out);
-            }
-        }
+        LocalDateTime summaryStart = (att.getCheckInDate() != null ? att.getCheckInDate() : date).atTime(att.getCheckIn());
+        LocalDateTime summaryEnd = (att.getCheckOutDate() != null ? att.getCheckOutDate() : date).atTime(att.getCheckOut());
+        if (att.getCheckOutDate() == null && summaryEnd.isBefore(summaryStart)) summaryEnd = summaryEnd.plusDays(1);
+        // Match both dates and times before subtracting breaks from the daily summary.
+        long totalSeconds = summaryStart.equals(firstIn) && summaryEnd.equals(lastOut)
+                ? sessionSeconds : Math.max(0, ChronoUnit.SECONDS.between(summaryStart, summaryEnd));
 
         double workedHours = Math.round((totalSeconds / 3600.0) * 100.0) / 100.0;
         att.setWorkedHour(workedHours);
@@ -1028,11 +1037,8 @@ public class AttendanceService {
                 continue;
             }
 
-            // A working Saturday must not appear as Weekly Off for a Sunday-only shift.
-            var shiftForDay = effectiveWeekdayShift(calendarShift, cur);
-            boolean isWeekend = shiftForDay == null ? cur.getDayOfWeek().getValue() >= 6
-                    : shiftForDay.getWeeklyOffDays() != null && java.util.Arrays.stream(shiftForDay.getWeeklyOffDays().split(","))
-                        .map(String::trim).anyMatch(cur.getDayOfWeek().name()::equalsIgnoreCase);
+            // Match the assigned shift's explicit weekly-off days, including weekday offs.
+            boolean isWeekend = isWeekOff(calendarShift, cur);
 
             Attendance att = attendanceMap.get(cur);
 
@@ -1121,7 +1127,7 @@ public class AttendanceService {
         LocalDate today = LocalDate.now(DUBAI_ZONE);
 
         // 1. Find or create daily Attendance summary record
-        Attendance att = attendanceRepository.findByEmployeeIdAndAttendanceDate(employeeId, today)
+        Attendance att = attendanceRepository.findByEmployeeAndDateForUpdate(employeeId, today)
                 .orElseGet(() -> {
                     Attendance newAtt = new Attendance();
                     newAtt.setEmployee(employee);
@@ -1191,7 +1197,11 @@ public class AttendanceService {
     @Transactional
     public AttendanceResponse clockOut(Long attendanceId, Double latitude, Double longitude,
                                         Double accuracyMeters, String source) {
-        Attendance att = find(attendanceId);
+        if (Attendance.AUTO_CHECKOUT_SOURCE.equals(source)) {
+            throw new BadRequestException("Automatic checkout is reserved for the attendance scheduler");
+        }
+        Attendance att = attendanceRepository.findByIdForUpdate(attendanceId)
+                .orElseThrow(() -> new ResourceNotFoundException("Attendance", attendanceId));
         if (att.getShift() == null) {
             ShiftSchedule assignedShift = resolveAssignedShift(att.getEmployee());
             if (assignedShift == null) {
@@ -1209,13 +1219,23 @@ public class AttendanceService {
                 .findFirst()
                 .orElse(null);
 
+        var checkoutNow = ZonedDateTime.now(DUBAI_ZONE);
+        if (openActivity == null) {
+            openActivity = automaticActivityForReplacement(att, activities, checkoutNow.toLocalDateTime()).orElse(null);
+        }
+        boolean replacingAutomatic = Attendance.AUTO_CHECKOUT_SOURCE.equals(att.getClockOutSource());
         boolean newCheckout = openActivity != null || att.getCheckOut() == null;
-        var checkoutNow = java.time.ZonedDateTime.now(DUBAI_ZONE);
+        if (replacingAutomatic && openActivity == null && att.getCheckIn() != null) {
+            var checkIn = (att.getCheckInDate() != null ? att.getCheckInDate() : today).atTime(att.getCheckIn());
+            if (!checkoutNow.toLocalDateTime().isAfter(checkIn)) return AttendanceResponse.from(att);
+        }
         Boolean withinGeofence = null;
         if (openActivity != null) {
             openActivity.setClockOut(checkoutNow.toLocalTime());
             openActivity.setClockOutDate(checkoutNow.toLocalDate());
             openActivity.setOutDatetime(checkoutNow.toLocalDateTime());
+            if (openActivity.getClockType() == AttendanceActivity.ClockType.AUTO)
+                openActivity.setClockType(AttendanceActivity.ClockType.MANUAL);
             openActivity.setClockOutLatitude(latitude);
             openActivity.setClockOutLongitude(longitude);
             openActivity.setClockOutAccuracyMeters(accuracyMeters);
@@ -1240,7 +1260,8 @@ public class AttendanceService {
         att.setCheckOutLongitude(longitude);
         att.setCheckOutWithinGeofence(withinGeofence);
         att.setCheckOutAccuracyMeters(accuracyMeters);
-        if (source != null) att.setClockOutSource(source);
+        if (source != null || replacingAutomatic) att.setClockOutSource(source);
+        if (replacingAutomatic) att.setCheckoutNeedsReview(false);
 
         attendanceRepository.save(att);
         autoComputeOnCheckout(att);
@@ -1252,6 +1273,87 @@ public class AttendanceService {
             res.setPunchReasonType(AttendanceRegularisationRequest.RequestType.LATE_CHECK_OUT_REASON);
         }
         return res;
+    }
+
+    @Transactional
+    public void autoClockOut(Long headOfficeId, Long companyId, Long attendanceId, Instant now) {
+        Instant enabledSince = autoCheckoutSettings.lockEnabledSince(headOfficeId);
+        if (enabledSince == null) return;
+        Attendance att = attendanceRepository.findByIdForUpdate(attendanceId).orElse(null);
+        if (att == null || !att.isActive() || att.getCompany() == null || !companyId.equals(att.getCompany().getId())
+                || att.getEmployee() == null || !att.getEmployee().isActive()
+                || att.getEmployee().getCompany() == null || !companyId.equals(att.getEmployee().getCompany().getId())
+                || att.getCheckIn() == null || Boolean.TRUE.equals(att.getIsHoliday())
+                || att.getRegularisationStatus() == Attendance.RegularisationStatus.HAS_PENDING
+                || !attendancePolicies.required(att.getEmployee(), att.getAttendanceDate())) return;
+
+        LocalDateTime end = CheckoutReminderService.scheduledEnd(att.getAttendanceDate(), shiftForAttendance(att));
+        if (end == null) return;
+        ZonedDateTime checkout = end.atZone(DUBAI_ZONE);
+        if (!automaticCheckoutDue(checkout, enabledSince, now)) return;
+
+        List<AttendanceActivity> activities = attendanceActivityRepository
+                .findByEmployeeIdAndAttendanceDate(att.getEmployee().getId(), att.getAttendanceDate());
+        // Ambiguous or already-closed sessions remain available for manual correction.
+        List<AttendanceActivity> open = activities.stream().filter(a -> a.getClockOut() == null).toList();
+        if (open.size() != 1 || open.getFirst().getClockIn() == null) return;
+        AttendanceActivity activity = open.getFirst();
+        var start = activityStart(activity, att.getAttendanceDate());
+        if (!end.isAfter(start)) return;
+        if (att.getCheckOutUtc() != null && !start.atZone(DUBAI_ZONE).toInstant().isAfter(att.getCheckOutUtc())) return;
+        if (att.getCheckOutUtc() == null && att.getCheckOut() != null) {
+            LocalDate lastDate = att.getCheckOutDate() != null ? att.getCheckOutDate() : att.getAttendanceDate();
+            if (!start.isAfter(lastDate.atTime(att.getCheckOut()))) return;
+        }
+
+        configureShiftForAttendance(att);
+        activity.setClockType(AttendanceActivity.ClockType.AUTO);
+        activity.setClockOut(end.toLocalTime());
+        activity.setClockOutDate(end.toLocalDate());
+        activity.setOutDatetime(end);
+        attendanceActivityRepository.save(activity);
+
+        att.setCheckOut(end.toLocalTime());
+        att.setCheckOutDate(end.toLocalDate());
+        att.setCheckOutUtc(checkout.toInstant());
+        att.setClockOutSource(Attendance.AUTO_CHECKOUT_SOURCE);
+        att.setClockOutDeviceName(null);
+        att.setCheckOutLatitude(null);
+        att.setCheckOutLongitude(null);
+        att.setCheckOutAccuracyMeters(null);
+        att.setCheckOutWithinGeofence(null);
+        att.setCheckOutAddress(null);
+        autoComputeOnCheckout(att);
+    }
+
+    @Transactional
+    public void recalculateAfterAutomaticCheckoutReplacement(Attendance attendance) {
+        autoComputeOnCheckout(attendance);
+    }
+
+    static boolean automaticCheckoutDue(ZonedDateTime shiftEnd, Instant enabledSince, Instant now) {
+        Instant end = shiftEnd.toInstant();
+        return !end.isBefore(enabledSince) && !now.isBefore(end.plusSeconds(AUTO_CHECKOUT_GRACE_MINUTES * 60L))
+                && now.isBefore(end.plusSeconds(24 * 60 * 60L));
+    }
+
+    /** Identify the estimated checkout so a later real punch can replace it without losing breaks. */
+    public static Optional<AttendanceActivity> automaticActivityForReplacement(
+            Attendance attendance, List<AttendanceActivity> activities, LocalDateTime realCheckout) {
+        if (!Attendance.AUTO_CHECKOUT_SOURCE.equals(attendance.getClockOutSource())
+                || attendance.getCheckOutUtc() == null) return Optional.empty();
+        LocalDateTime estimate = attendance.getCheckOutUtc().atZone(DUBAI_ZONE).toLocalDateTime();
+        return activities.stream()
+                .filter(activity -> activity.getClockType() == AttendanceActivity.ClockType.AUTO
+                        && estimate.equals(activity.getOutDatetime()) && activity.getClockIn() != null
+                        && realCheckout.isAfter(activityStart(activity, attendance.getAttendanceDate())))
+                .findFirst();
+    }
+
+    private static LocalDateTime activityStart(AttendanceActivity activity, LocalDate attendanceDate) {
+        if (activity.getInDatetime() != null) return activity.getInDatetime();
+        LocalDate date = activity.getClockInDate() != null ? activity.getClockInDate() : attendanceDate;
+        return date.atTime(activity.getClockIn());
     }
 
     /**
@@ -1382,8 +1484,33 @@ public class AttendanceService {
                 .orElse(base);
     }
 
-    private boolean isDefaultWeekend(ShiftSchedule assigned, LocalDate date) {
-        return date.getDayOfWeek().getValue() >= 6 && effectiveWeekdayShift(assigned, date) == assigned;
+    private Map<Long, ShiftSchedule> assignedShifts(Collection<Employee> employees) {
+        Map<Long, ShiftSchedule> shifts = new HashMap<>();
+        List<Long> workInfoEmployeeIds = new ArrayList<>();
+        for (Employee employee : employees) {
+            if (employee.getShift() != null) shifts.put(employee.getId(), employee.getShift());
+            else workInfoEmployeeIds.add(employee.getId());
+        }
+        if (!workInfoEmployeeIds.isEmpty()) {
+            employeeWorkInformationRepository.findByEmployeeIdIn(workInfoEmployeeIds).forEach(workInfo -> {
+                if (workInfo.getEmployee() != null && workInfo.getShift() != null) {
+                    shifts.putIfAbsent(workInfo.getEmployee().getId(), workInfo.getShift());
+                }
+            });
+        }
+        return shifts;
+    }
+
+    private boolean isWeekOff(ShiftSchedule assigned, LocalDate date) {
+        if (date == null) return false;
+        ShiftSchedule effective = effectiveWeekdayShift(assigned, date);
+        if (effective == null) return date.getDayOfWeek().getValue() >= 6;
+        String weeklyOffDays = effective.getWeeklyOffDays();
+        if (weeklyOffDays == null || weeklyOffDays.isBlank()) return false;
+        return Arrays.stream(weeklyOffDays.split(","))
+                .map(String::trim)
+                .filter(day -> !day.isEmpty())
+                .anyMatch(date.getDayOfWeek().name()::equalsIgnoreCase);
     }
 
     private void applyShift(Attendance attendance, ShiftSchedule shift) {
@@ -1413,9 +1540,10 @@ public class AttendanceService {
         for (Attendance a : attendances) {
             if (a.getEmployee() != null) presentIds.add(a.getEmployee().getId());
         }
+        Map<Long, ShiftSchedule> employeeShifts = assignedShifts(allActive);
         List<Map<String, Object>> result = new ArrayList<>();
         for (Employee emp : allActive) {
-            if (!presentIds.contains(emp.getId())) {
+            if (!presentIds.contains(emp.getId()) && !isWeekOff(employeeShifts.get(emp.getId()), date)) {
                 Map<String, Object> m = new LinkedHashMap<>();
                 m.put("id", emp.getId());
                 m.put("name", emp.getFirstName() + " " + (emp.getLastName() != null ? emp.getLastName() : ""));
@@ -1476,7 +1604,13 @@ public class AttendanceService {
                 .stream().filter(a -> a.getEmployee() != null && activeEmpIds.contains(a.getEmployee().getId()))
                 .collect(Collectors.toList());
         long presentToday = presentRecords.size();
-        long absentToday = totalEmployees - exemptEmployees - presentToday;
+        Set<Long> presentEmployeeIds = presentRecords.stream().map(a -> a.getEmployee().getId()).collect(Collectors.toSet());
+        Map<Long, ShiftSchedule> employeeShifts = assignedShifts(allActive);
+        long weekOffToday = allActive.stream()
+                .filter(employee -> !presentEmployeeIds.contains(employee.getId())
+                        && isWeekOff(employeeShifts.get(employee.getId()), targetDate))
+                .count();
+        long absentToday = Math.max(0, totalEmployees - exemptEmployees - presentToday - weekOffToday);
         long notOutYet = presentRecords.stream().filter(a -> a.getCheckOut() == null).count();
 
         List<Attendance> dayAttendances = attendanceRepository.findByCompanyIdAndAttendanceDate(companyId, targetDate)
@@ -1528,10 +1662,22 @@ public class AttendanceService {
 
     @Transactional(readOnly = true)
     public void exportToExcel(Long companyId, List<Long> employeeIds, LocalDate from, LocalDate to, HttpServletResponse response) throws IOException {
+        response.setContentType("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+        response.setHeader("Content-Disposition", "attachment; filename=attendance.xlsx");
+        response.getOutputStream().write(exportToExcelBytes(companyId, employeeIds, from, to, true));
+    }
+
+    @Transactional(readOnly = true)
+    public byte[] exportToExcelBytes(Long companyId, List<Long> employeeIds, LocalDate from, LocalDate to) throws IOException {
+        return exportToExcelBytes(companyId, employeeIds, from, to, false);
+    }
+
+    private byte[] exportToExcelBytes(Long companyId, List<Long> employeeIds, LocalDate from, LocalDate to,
+                                     boolean clampToToday) throws IOException {
         // Build full-view rows (same logic as getFullView) so export mirrors the web
         LocalDate today = LocalDate.now();
         LocalDate start = from != null ? from : today;
-        LocalDate end   = to != null ? (to.isAfter(today) ? today : to) : today;
+        LocalDate end   = to != null ? (clampToToday && to.isAfter(today) ? today : to) : today;
 
         List<Employee> employees;
         if (employeeIds != null && !employeeIds.isEmpty()) {
@@ -1540,6 +1686,7 @@ public class AttendanceService {
         } else {
             employees = employeeRepository.findByCompanyIdAndIsActiveTrue(companyId);
         }
+        Map<Long, ShiftSchedule> employeeShifts = assignedShifts(employees);
 
         var attendancePolicy = attendancePolicies.index(companyId, employees.stream().map(Employee::getId).toList(), end);
         Map<String, Attendance> attMap = new HashMap<>();
@@ -1567,7 +1714,7 @@ public class AttendanceService {
                     LocalDate fc = cursor;
                     LeaveRequest ml = leaveMap.getOrDefault(emp.getId(), List.of()).stream()
                             .filter(lr -> !fc.isBefore(lr.getStartDate()) && !fc.isAfter(lr.getEndDate())).findFirst().orElse(null);
-                    boolean isWeekend = isDefaultWeekend(emp.getShift(), cursor);
+                    boolean isWeekend = isWeekOff(employeeShifts.get(emp.getId()), cursor);
                     String ds = ml != null ? "ON_LEAVE"
                               : holidayDates.contains(cursor) ? "HOLIDAY"
                               : isWeekend ? "WEEK_OFF"
@@ -1581,10 +1728,7 @@ public class AttendanceService {
             cursor = cursor.minusDays(1);
         }
 
-        response.setContentType("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
-        response.setHeader("Content-Disposition", "attachment; filename=attendance.xlsx");
-
-        try (XSSFWorkbook wb = new XSSFWorkbook()) {
+        try (XSSFWorkbook wb = new XSSFWorkbook(); ByteArrayOutputStream output = new ByteArrayOutputStream()) {
             Sheet sheet = wb.createSheet("Attendance");
             sheet.setDefaultRowHeightInPoints(20);
 
@@ -1702,7 +1846,8 @@ public class AttendanceService {
             for (int i = 0; i < widths.length; i++) sheet.setColumnWidth(i, widths[i]);
 
             sheet.createFreezePane(0, 2);
-            wb.write(response.getOutputStream());
+            wb.write(output);
+            return output.toByteArray();
         }
     }
 
@@ -1860,6 +2005,7 @@ public class AttendanceService {
                     .filter(e -> e.getDepartment() != null && departmentId.equals(e.getDepartment().getId()))
                     .collect(Collectors.toList());
         }
+        Map<Long, ShiftSchedule> employeeShifts = assignedShifts(employees);
 
         var attendancePolicy = attendancePolicies.index(companyId, employees.stream().map(Employee::getId).toList(), last);
 
@@ -1933,7 +2079,7 @@ public class AttendanceService {
 
             for (LocalDate cur = first; !cur.isAfter(last); cur = cur.plusDays(1)) {
                 AttendanceRegisterDayDto cell = new AttendanceRegisterDayDto();
-                boolean isWeekend = isDefaultWeekend(emp.getShift(), cur);
+                boolean isWeekend = isWeekOff(employeeShifts.get(emp.getId()), cur);
                 var approvedLeave = ApprovedLeaveOverlay.forDay(companyId, emp.getId(), cur,
                         approvedLeavesByEmployee.getOrDefault(emp.getId(), List.of()));
 

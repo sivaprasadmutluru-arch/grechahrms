@@ -15,6 +15,7 @@ import java.time.Instant;
 public class CheckoutReminderScheduler {
     private final CompanyRepository companies;
     private final CheckoutReminderService reminders;
+    private final AutoCheckoutService autoCheckout;
     private volatile boolean ready;
     @EventListener(ApplicationReadyEvent.class) public void ready() { ready = true; }
 
@@ -29,14 +30,26 @@ public class CheckoutReminderScheduler {
                 if (!tenant.isSchemaReady() || tenant.getSchemaName() == null || tenant.getStatus() != Company.CompanyStatus.ACTIVE) continue;
                 try {
                     TenantContext.setTenant(tenant.getSchemaName());
-                    reminders.remind(tenant.getId(), now);
+                    processCompany(tenant.getId(), tenant.getId(), now);
                     for (var branch : companies.findByParentCompanyIdAndIsActiveTruePublic(tenant.getId())) {
-                        if (branch.getStatus() == Company.CompanyStatus.ACTIVE) reminders.remind(branch.getId(), now);
+                        if (branch.getStatus() == Company.CompanyStatus.ACTIVE) processCompany(tenant.getId(), branch.getId(), now);
                     }
                 } catch (Exception ex) {
                     log.error("Checkout reminder scan failed tenant={}", tenant.getSchemaName(), ex);
                 } finally { TenantContext.setTenant(previous); }
             }
         } finally { TenantContext.setTenant(previous); }
+    }
+    private void processCompany(Long headOfficeId, Long companyId, Instant now) {
+        try {
+            reminders.remind(companyId, now);
+        } catch (RuntimeException ex) {
+            log.error("Checkout reminder scan failed company={}", companyId, ex);
+        }
+        try {
+            autoCheckout.scan(headOfficeId, companyId, now);
+        } catch (RuntimeException ex) {
+            log.error("Automatic checkout scan failed company={}", companyId, ex);
+        }
     }
 }

@@ -507,17 +507,38 @@ public class SchemaProvisioningService {
             try {
                 conn.createStatement().execute("SET search_path TO " + schemaName + ", public");
 
-                // Step 1 — tables with company_id
+                // Step 1 — tables with company_id using fast pg_catalog
                 List<String> companyTables = new ArrayList<>();
                 try (var ps = conn.prepareStatement(
-                        "SELECT table_name FROM information_schema.columns " +
-                        "WHERE table_schema = ? AND column_name = 'company_id' ORDER BY table_name")) {
+                        "SELECT c.relname FROM pg_attribute a " +
+                        "JOIN pg_class c ON c.oid = a.attrelid " +
+                        "JOIN pg_namespace n ON n.oid = c.relnamespace " +
+                        "WHERE n.nspname = ? AND a.attname = 'company_id' " +
+                        "  AND a.attnum > 0 AND NOT a.attisdropped " +
+                        "  AND c.relkind = 'r' " +
+                        "ORDER BY c.relname")) {
                     ps.setString(1, schemaName);
                     try (var rs = ps.executeQuery()) {
                         while (rs.next()) companyTables.add(rs.getString(1));
                     }
                 }
                 if (companyTables.isEmpty()) { conn.commit(); return; }
+
+                // Fast check: if no table in this schema has rows for these companies, exit immediately
+                boolean hasData = false;
+                for (String tbl : companyTables) {
+                    try (var checkPs = conn.prepareStatement("SELECT 1 FROM \"" + schemaName + "\"." + tbl + " WHERE company_id IN (" + ids + ") LIMIT 1");
+                         var checkRs = checkPs.executeQuery()) {
+                        if (checkRs.next()) {
+                            hasData = true;
+                            break;
+                        }
+                    } catch (SQLException ignored) {}
+                }
+                if (!hasData) {
+                    conn.commit();
+                    return;
+                }
 
                 // Step 1b — null out self-referential FK columns so bulk DELETE can succeed.
                 String selfRefTenantSql =

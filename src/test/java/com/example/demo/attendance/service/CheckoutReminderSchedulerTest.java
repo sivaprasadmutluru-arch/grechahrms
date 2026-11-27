@@ -12,7 +12,8 @@ class CheckoutReminderSchedulerTest {
     @Test void scansReadyTenantsAndBranchesAndAlwaysRestoresTenant() {
         var companies = mock(CompanyRepository.class);
         var reminders = mock(CheckoutReminderService.class);
-        var scheduler = new CheckoutReminderScheduler(companies,reminders);
+        var auto = mock(AutoCheckoutService.class);
+        var scheduler = new CheckoutReminderScheduler(companies, reminders, auto);
         var company = new Company(); company.setId(65L); company.setSchemaName("pioneer");
         var branch = new Company(); branch.setId(66L);
         var other = new Company(); other.setId(70L); other.setSchemaName("other");
@@ -23,10 +24,12 @@ class CheckoutReminderSchedulerTest {
         doThrow(new IllegalStateException("test tenant failure")).when(reminders).remind(eq(70L),any());
         TenantContext.setTenant("original");
         try {
-            scheduler.process(); verifyNoInteractions(reminders);
+            scheduler.process(); verifyNoInteractions(reminders, auto);
             scheduler.ready(); scheduler.process();
             verify(reminders).remind(eq(65L),any()); verify(reminders).remind(eq(66L),any());
             verify(reminders).remind(eq(70L),any()); verify(reminders,never()).remind(eq(80L),any());
+            verify(auto).scan(eq(65L), eq(66L), any());
+            verify(auto).scan(eq(70L), eq(70L), any());
             assertEquals("original",TenantContext.getTenant());
         } finally { TenantContext.clear(); }
     }

@@ -13,6 +13,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.mail.javamail.JavaMailSender;
 import org.springframework.mail.javamail.JavaMailSenderImpl;
 import org.springframework.mail.javamail.MimeMessageHelper;
+import org.springframework.core.io.ByteArrayResource;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -107,6 +108,42 @@ public class EmailService {
         }
         emailLogRepository.save(emailLog);
         return false;
+    }
+
+    /** Sends a company-scoped email with one in-memory attachment. */
+    @Transactional
+    public boolean sendEmailWithAttachment(Long companyId, String to, String subject, String htmlBody,
+                                           Employee employee, String filename, byte[] attachment) {
+        EmailLog emailLog = new EmailLog();
+        emailLog.setRecipientEmail(to);
+        emailLog.setSubject(subject);
+        emailLog.setBody(htmlBody);
+        emailLog.setEmployee(employee);
+        emailLog.setSentAt(LocalDateTime.now());
+        emailLog.setStatus(EmailLog.EmailStatus.PENDING);
+        emailLogRepository.save(emailLog);
+
+        try {
+            JavaMailSender sender = buildSender(companyId);
+            MimeMessage message = sender.createMimeMessage();
+            MimeMessageHelper helper = new MimeMessageHelper(message, true, "UTF-8");
+            helper.setTo(to);
+            helper.setSubject(subject);
+            helper.setText(htmlBody, true);
+            String fromEmail = getFromEmail(companyId);
+            if (fromEmail != null) helper.setFrom(fromEmail);
+            helper.addAttachment(filename, new ByteArrayResource(attachment));
+            sender.send(message);
+            emailLog.setStatus(EmailLog.EmailStatus.SENT);
+            emailLogRepository.save(emailLog);
+            return true;
+        } catch (Exception e) {
+            emailLog.setStatus(EmailLog.EmailStatus.FAILED);
+            emailLog.setErrorMessage(e.getMessage());
+            log.warn("Failed to send email with attachment to {}: {}", to, e.getMessage());
+            emailLogRepository.save(emailLog);
+            return false;
+        }
     }
 
     /** Whether this company can deliver email rather than falling back to the no-op sender. */

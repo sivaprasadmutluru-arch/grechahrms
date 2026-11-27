@@ -1,7 +1,9 @@
 package com.example.demo.attendance.repository;
 
 import com.example.demo.attendance.entity.Attendance;
+import jakarta.persistence.LockModeType;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Lock;
 import org.springframework.data.jpa.repository.JpaSpecificationExecutor;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
@@ -24,6 +26,28 @@ public interface AttendanceRepository extends JpaRepository<Attendance, Long>, J
     List<Attendance> findByCompanyIdAndAttendanceDate(Long companyId, LocalDate date);
     List<Attendance> findByCompanyIdAndAttendanceDateAndCheckInIsNotNull(Long companyId, LocalDate date);
     List<Attendance> findByCompanyIdAndAttendanceDateAndCheckInIsNotNullAndCheckOutIsNull(Long companyId, LocalDate date);
+
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("SELECT a FROM Attendance a WHERE a.id = :id")
+    Optional<Attendance> findByIdForUpdate(@Param("id") Long id);
+
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("SELECT a FROM Attendance a WHERE a.employee.id = :employeeId AND a.attendanceDate = :date")
+    Optional<Attendance> findByEmployeeAndDateForUpdate(@Param("employeeId") Long employeeId,
+                                                        @Param("date") LocalDate date);
+
+    @Query("""
+            SELECT a.id FROM Attendance a
+            WHERE a.company.id = :companyId AND a.isActive = true AND a.attendanceDate BETWEEN :from AND :to
+              AND a.checkIn IS NOT NULL AND EXISTS (
+                  SELECT activity.id FROM AttendanceActivity activity
+                  WHERE activity.employee.id = a.employee.id AND activity.attendanceDate = a.attendanceDate
+                    AND activity.clockIn IS NOT NULL AND activity.clockOut IS NULL
+              )
+            ORDER BY a.id
+            """)
+    List<Long> findAutoCheckoutCandidates(@Param("companyId") Long companyId,
+                                          @Param("from") LocalDate from, @Param("to") LocalDate to);
 
     // ─── Payroll: Present Days ────────────────────────────────────────────────
 

@@ -180,6 +180,7 @@ public class AdmsService {
                                  Instant punchInstant, BiometricDevice device) {
         Long employeeId = employee.getId();
 
+        var recorded = attendanceRepository.findByEmployeeAndDateForUpdate(employeeId, punchDate);
         // Check if there's already an open activity (clocked in but not out) for today
         List<AttendanceActivity> activities = activityRepository
                 .findByEmployeeIdAndAttendanceDate(employeeId, punchDate);
@@ -193,7 +194,7 @@ public class AdmsService {
                 earliest.setClockIn(punchTime);
                 earliest.setInDatetime(LocalDateTime.of(punchDate, punchTime));
                 activityRepository.save(earliest);
-                attendanceRepository.findByEmployeeIdAndAttendanceDate(employeeId, punchDate).ifPresent(att -> {
+                recorded.ifPresent(att -> {
                     if (att.getCheckIn() == null || punchTime.isBefore(att.getCheckIn())) {
                         att.setCheckIn(punchTime); att.setCheckInDate(punchDate); att.setCheckInUtc(punchInstant);
                         att.setClockInDeviceName(device.getName()); att.setClockInSource("device");
@@ -216,17 +217,14 @@ public class AdmsService {
         activityRepository.save(activity);
 
         // Find or create the daily Attendance summary record
-        Attendance att = attendanceRepository
-                .findByEmployeeIdAndAttendanceDate(employeeId, punchDate)
-                .orElseGet(() -> {
-                    Attendance newAtt = new Attendance();
-                    newAtt.setEmployee(employee);
-                    newAtt.setCompany(employee.getCompany());
-                    newAtt.setAttendanceDate(punchDate);
-                    // attendanceStatus defaults to REGULAR; evaluated on checkout
-                    attendanceService.configureShiftForAttendance(newAtt);
-                    return attendanceRepository.save(newAtt);
-                });
+        Attendance att = recorded.orElseGet(() -> {
+            Attendance newAtt = new Attendance();
+            newAtt.setEmployee(employee);
+            newAtt.setCompany(employee.getCompany());
+            newAtt.setAttendanceDate(punchDate);
+            attendanceService.configureShiftForAttendance(newAtt);
+            return attendanceRepository.save(newAtt);
+        });
 
         // Update first check-in of the day if not already set
         if (att.getCheckIn() == null || punchTime.isBefore(att.getCheckIn())) {
@@ -247,40 +245,54 @@ public class AdmsService {
                                   Instant punchInstant, BiometricDevice device) {
         Long employeeId = employee.getId();
 
-        // Find the open activity for today and close it
-        List<AttendanceActivity> activities = activityRepository
-                .findByEmployeeIdAndAttendanceDate(employeeId, punchDate);
-        AttendanceActivity openActivity = activities.stream()
-                .filter(a -> a.getClockOut() == null)
-                .filter(a -> a.getClockIn() != null && !a.getClockIn().isAfter(punchTime))
-                .max(Comparator.comparing(AttendanceActivity::getClockIn))
-                .orElse(null);
+        var recorded = attendanceRepository.findByEmployeeAndDateForUpdate(employeeId, punchDate);
+        var checkoutTime = LocalDateTime.of(punchDate, punchTime);
+        LocalDate sessionDate = punchDate;
+        List<AttendanceActivity> activities = activityRepository.findByEmployeeIdAndAttendanceDate(employeeId, sessionDate);
+        AttendanceActivity openActivity = checkoutActivity(recorded.orElse(null), activities, checkoutTime);
 
+        // A shift that started yesterday can still own this checkout after midnight.
+        if (openActivity == null && recorded.map(Attendance::getCheckIn).isEmpty()) {
+            var previousDate = punchDate.minusDays(1);
+            var previous = attendanceRepository.findByEmployeeAndDateForUpdate(employeeId, previousDate);
+            if (previous.isPresent()) {
+                var shift = attendanceService.shiftForAttendance(previous.get());
+                if (shift != null && shift.getStartTime() != null && shift.getEndTime() != null
+                        && shift.getEndTime().isBefore(shift.getStartTime())
+                        && punchTime.isBefore(shift.getStartTime())) {
+                    var previousActivities = activityRepository.findByEmployeeIdAndAttendanceDate(employeeId, previousDate);
+                    var previousActivity = checkoutActivity(previous.get(), previousActivities, checkoutTime);
+                    if (previousActivity != null) {
+                        sessionDate = previousDate;
+                        recorded = previous;
+                        openActivity = previousActivity;
+                    }
+                }
+            }
+        }
+
+        final LocalDate attendanceDate = sessionDate;
+        Attendance att = recorded.orElseGet(() -> {
+            Attendance newAtt = new Attendance();
+            newAtt.setEmployee(employee);
+            newAtt.setCompany(employee.getCompany());
+            newAtt.setAttendanceDate(attendanceDate);
+            attendanceService.configureShiftForAttendance(newAtt);
+            return attendanceRepository.save(newAtt);
+        });
+        boolean automatic = Attendance.AUTO_CHECKOUT_SOURCE.equals(att.getClockOutSource());
+        if (automatic && openActivity == null) return;
         if (openActivity != null) {
             openActivity.setClockOut(punchTime);
             openActivity.setClockOutDate(punchDate);
-            openActivity.setOutDatetime(LocalDateTime.of(punchDate, punchTime));
+            openActivity.setOutDatetime(checkoutTime);
+            if (openActivity.getClockType() == AttendanceActivity.ClockType.AUTO)
+                openActivity.setClockType(AttendanceActivity.ClockType.MANUAL);
             activityRepository.save(openActivity);
-        } else {
-            log.debug("ADMS: no open activity for employee {} on {} - creating standalone clock-out",
-                    employeeId, punchDate);
         }
 
-        // Find or create the daily Attendance summary
-        Attendance att = attendanceRepository
-                .findByEmployeeIdAndAttendanceDate(employeeId, punchDate)
-                .orElseGet(() -> {
-                    Attendance newAtt = new Attendance();
-                    newAtt.setEmployee(employee);
-                    newAtt.setCompany(employee.getCompany());
-                    newAtt.setAttendanceDate(punchDate);
-                    // attendanceStatus defaults to REGULAR; evaluated on checkout
-                    attendanceService.configureShiftForAttendance(newAtt);
-                    return attendanceRepository.save(newAtt);
-                });
-
         // Always update clock-out to the latest punch (last out wins)
-        if (att.getCheckOutUtc() != null && !punchInstant.isAfter(att.getCheckOutUtc())) {
+        if (!automatic && att.getCheckOutUtc() != null && !punchInstant.isAfter(att.getCheckOutUtc())) {
             if (openActivity != null) attendanceService.computeWorkedHours(att.getId());
             return;
         }
@@ -289,10 +301,27 @@ public class AdmsService {
         att.setCheckOutUtc(punchInstant);
         att.setClockOutDeviceName(device.getName());
         att.setClockOutSource("device");
+        if (automatic) att.setCheckoutNeedsReview(false);
         attendanceRepository.save(att);
 
-        // Trigger the existing worked-hours computation, overtime detection, and WorkRecord generation
-        attendanceService.computeWorkedHours(att.getId());
+        if (automatic) {
+            attendanceService.recalculateAfterAutomaticCheckoutReplacement(att);
+        } else {
+            attendanceService.computeWorkedHours(att.getId());
+        }
+    }
+
+    private AttendanceActivity checkoutActivity(Attendance attendance, List<AttendanceActivity> activities,
+                                                  LocalDateTime checkout) {
+        var open = activities.stream()
+                .filter(a -> a.getClockOut() == null && a.getClockIn() != null)
+                .filter(a -> a.getInDatetime() != null ? !a.getInDatetime().isAfter(checkout)
+                        : a.getClockInDate() != null ? !a.getClockInDate().atTime(a.getClockIn()).isAfter(checkout)
+                        : !a.getClockIn().isAfter(checkout.toLocalTime()))
+                .max(Comparator.comparing(a -> a.getInDatetime() != null ? a.getInDatetime()
+                        : (a.getClockInDate() != null ? a.getClockInDate() : checkout.toLocalDate()).atTime(a.getClockIn())));
+        if (open.isPresent() || attendance == null) return open.orElse(null);
+        return AttendanceService.automaticActivityForReplacement(attendance, activities, checkout).orElse(null);
     }
 
     /**

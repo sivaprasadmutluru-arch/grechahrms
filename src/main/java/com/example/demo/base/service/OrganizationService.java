@@ -340,8 +340,29 @@ public class OrganizationService {
      */
     @Transactional
     public void deleteOrgPublicRecords(Long id, List<Company> companies, String logoPath) {
+        entityManager.createNativeQuery("DELETE FROM public.attendance_grace_times WHERE organization_id = :orgId")
+                .setParameter("orgId", id)
+                .executeUpdate();
+
+        // Also clean up any lingering attendance_grace_times across all schemas that reference this organization
+        try (Connection conn = dataSource.getConnection()) {
+            try (var ps = conn.prepareStatement(
+                    "DO $$ DECLARE r RECORD; BEGIN " +
+                    "FOR r IN (SELECT n.nspname AS s, c.relname AS t FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace JOIN pg_attribute a ON a.attrelid = c.oid WHERE a.attname = 'organization_id' AND c.relname = 'attendance_grace_times') LOOP " +
+                    "EXECUTE format('DELETE FROM %I.%I WHERE organization_id = %L', r.s, r.t, " + id + "); " +
+                    "END LOOP; END $$;")) {
+                ps.execute();
+            }
+        } catch (SQLException e) {
+            log.warn("Failed to delete attendance_grace_times across tenant schemas for org {}: {}", id, e.getMessage());
+        }
+
         if (!companies.isEmpty()) {
             List<Long> companyIds = companies.stream().map(Company::getId).collect(Collectors.toList());
+
+            entityManager.createNativeQuery("DELETE FROM public.attendance_grace_times WHERE company_id IN (:companyIds)")
+                    .setParameter("companyIds", companyIds)
+                    .executeUpdate();
 
             crossBranchAccessGrantRepository.deleteAllInBatch(
                     crossBranchAccessGrantRepository.findByCompanyIds(companyIds));

@@ -20,6 +20,7 @@ public class BiometricReceiptSchemaRunner implements CommandLineRunner {
         var schemas = jdbc.queryForList("select distinct schema_name from public.companies where schema_name is not null", String.class);
         for (String schema : schemas) {
             if (!schema.matches("[a-zA-Z0-9_]+")) throw new IllegalStateException("Invalid tenant schema");
+            jdbc.execute("CREATE SCHEMA IF NOT EXISTS \"" + schema + "\"");
             jdbc.execute("CREATE TABLE IF NOT EXISTS \"" + schema + "\".biometric_punch_receipts (LIKE public.biometric_punch_receipts INCLUDING ALL)");
             normalizeColumns(schema);
         }

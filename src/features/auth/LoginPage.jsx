@@ -12,8 +12,7 @@ export default function LoginPage() {
   const dispatch = useDispatch()
   const navigate = useNavigate()
   const location = useLocation()
-  const isCarrLogin = location.pathname === '/carr/login'
-  const destination = location.state?.from || (isCarrLogin ? '/carr/dashboard' : '/dashboard')
+  const destination = location.state?.from || '/dashboard'
   const { loading, error, isAuthenticated, user } = useSelector(selectAuth)
   const { register, handleSubmit, formState: { errors } } = useForm()
   const [showPassword, setShowPassword] = useState(false)
@@ -52,11 +51,11 @@ export default function LoginPage() {
               className="mx-auto h-auto w-[260px] max-w-full object-contain [image-rendering:-webkit-optimize-contrast] xl:w-[300px]"
             />
             <h1 className="mt-5 text-4xl font-black tracking-tight xl:text-[44px]">
-              {isCarrLogin ? 'CARR' : 'GRECHA'}<span className="text-[#5B2ECF]">{isCarrLogin ? ' Enterprise' : '.AI'}</span>
+              GRECHA<span className="text-[#5B2ECF]">.AI</span>
             </h1>
             <div className="mt-2 flex items-center gap-4">
               <div className="h-px flex-1 bg-slate-200" />
-              <p className="text-sm font-semibold tracking-[0.28em] text-[#5B2ECF] xl:text-base">{isCarrLogin ? 'SECURE CARR PORTAL' : 'AI HRMS PORTAL'}</p>
+              <p className="text-sm font-semibold tracking-[0.28em] text-[#5B2ECF] xl:text-base">AI HRMS PORTAL</p>
               <div className="h-px flex-1 bg-slate-200" />
             </div>
           </div>
@@ -141,12 +140,10 @@ export default function LoginPage() {
             <p className="mt-2 text-sm text-slate-500 xl:text-base">
               Powered by <span className="font-semibold text-slate-800">The Greater Change</span>
             </p>
-            <Link
-              to="/privacy-policy"
-              className="mt-2 inline-flex text-sm font-semibold text-[#5B2ECF] underline-offset-4 hover:text-[#43209E] hover:underline"
-            >
-              Privacy Policy
-            </Link>
+            <nav aria-label="Legal information" className="mt-2 flex flex-wrap items-center justify-center gap-x-5 gap-y-2">
+              <Link to="/privacy-policy" className="text-sm font-semibold text-[#5B2ECF] underline-offset-4 hover:text-[#43209E] hover:underline">Privacy Policy</Link>
+              <Link to="/terms-and-conditions" className="text-sm font-semibold text-[#5B2ECF] underline-offset-4 hover:text-[#43209E] hover:underline">Terms and Conditions</Link>
+            </nav>
           </div>
         </section>
       </main>

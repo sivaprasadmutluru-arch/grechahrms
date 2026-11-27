@@ -169,6 +169,11 @@
  .car-reference .car-report-filters{grid-template-columns:repeat(2,minmax(0,1fr));padding:20px;gap:18px}
 }
 @media(max-width:520px){
+ .car-reference .app{grid-template-columns:minmax(0,1fr)}
+ .car-reference .content .title{font-size:clamp(1.75rem,8vw,2.25rem);overflow-wrap:anywhere}
+ .car-reference .metrics{grid-template-columns:repeat(3,minmax(0,1fr))}
+ .car-reference .metric{min-width:0;overflow-wrap:anywhere}
+ .car-reference .metric+.metric{padding-left:8px}
  .car-reference .car-reports .title{font-size:30px;line-height:1.15}
  .car-reference .car-report-filters{grid-template-columns:1fr;padding:18px;gap:16px}
  .car-reference .car-report-actions{align-items:stretch;flex-direction:column}

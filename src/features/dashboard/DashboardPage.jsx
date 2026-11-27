@@ -169,87 +169,80 @@ const CheckInOutWidget = memo(function CheckInOutWidget({ user }) {
   }
 
   return (
-    <div className="bg-white rounded-2xl border border-gray-100 shadow-sm px-6 py-5 flex flex-wrap items-center gap-6 w-full">
+    <div className="bg-white rounded-2xl border border-gray-100 shadow-sm @container w-full min-w-0 px-4 py-4 sm:px-6 sm:py-5">
       <LocationModal />
-      {/* Clock — isolated in its own component so the 1s tick only re-renders this tiny node */}
-      <div className="flex-shrink-0">
-        <p className="text-xs font-medium text-gray-400 uppercase tracking-wide">Current Time</p>
-        <LiveClock />
-      </div>
+      <div className="grid h-full min-w-0 grid-cols-2 items-center gap-3 @min-[35rem]:grid-cols-[auto_minmax(0,1fr)_minmax(0,1fr)_auto] @min-[35rem]:gap-4">
+        {/* Clock — isolated in its own component so the 1s tick only re-renders this tiny node */}
+        <div className="min-w-0">
+          <p className="text-xs font-medium text-gray-400 uppercase tracking-wide">Current Time</p>
+          <LiveClock />
+        </div>
 
-      {/* Divider */}
-      <div className="h-10 w-px bg-gray-100 flex-shrink-0" />
-
-      {/* Status info */}
-      <div className="flex-1">
-        {myRecord ? (
-          <div className="flex items-center gap-6">
-            <div>
-              <p className="text-xs font-medium text-gray-400 uppercase tracking-wide">First In</p>
-              <p className="text-sm font-semibold text-gray-900 mt-0.5">
-                {formatAttendanceTime(myRecord.checkIn, myRecord.checkInUtc)}
-              </p>
-            </div>
-            {myRecord.checkOut && (
+        {/* Status info */}
+        <div className="min-w-0 wrap-anywhere @min-[35rem]:border-l @min-[35rem]:border-gray-100 @min-[35rem]:pl-4">
+          {myRecord ? (
+            <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
               <div>
-                <p className="text-xs font-medium text-gray-400 uppercase tracking-wide">Last Out</p>
+                <p className="text-xs font-medium text-gray-400 uppercase tracking-wide">First In</p>
                 <p className="text-sm font-semibold text-gray-900 mt-0.5">
-                  {formatAttendanceTime(myRecord.checkOut, myRecord.checkOutUtc)}
+                  {formatAttendanceTime(myRecord.checkIn, myRecord.checkInUtc)}
                 </p>
               </div>
-            )}
-            {isClockedIn && elapsed && (
-              <div className="flex items-center gap-1.5 mt-0.5">
-                <div className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse" />
-                <p className="text-xs font-medium text-green-600">{elapsed}</p>
-              </div>
-            )}
-          </div>
-        ) : (
-          <>
-            <p className="text-xs font-medium text-gray-400 uppercase tracking-wide">Status</p>
-            <p className="text-sm font-medium text-gray-500 mt-0.5">{clockStatus?.attendanceRequired === false ? 'Attendance not required' : 'Not checked in today'}</p>
-          </>
-        )}
-        {!user?.employeeId && (
-          <p className="text-xs text-gray-400">No employee account</p>
-        )}
-      </div>
+              {myRecord.checkOut && (
+                <div>
+                  <p className="text-xs font-medium text-gray-400 uppercase tracking-wide">Last Out</p>
+                  <p className="text-sm font-semibold text-gray-900 mt-0.5">
+                    {formatAttendanceTime(myRecord.checkOut, myRecord.checkOutUtc)}
+                  </p>
+                </div>
+              )}
+              {isClockedIn && elapsed && (
+                <div className="flex items-center gap-1.5 mt-0.5">
+                  <div className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse" />
+                  <p className="text-xs font-medium text-green-600">{elapsed}</p>
+                </div>
+              )}
+            </div>
+          ) : (
+            <>
+              <p className="text-xs font-medium text-gray-400 uppercase tracking-wide">Status</p>
+              <p className="text-sm font-medium text-gray-500 mt-0.5">{clockStatus?.attendanceRequired === false ? 'Attendance not required' : 'Not checked in today'}</p>
+            </>
+          )}
+          {!user?.employeeId && (
+            <p className="text-xs text-gray-400">No employee account</p>
+          )}
+        </div>
 
-      {/* Divider */}
-      <div className="h-10 w-px bg-gray-100 flex-shrink-0" />
+        {/* Shift */}
+        <div className="min-w-0 wrap-anywhere @min-[35rem]:border-l @min-[35rem]:border-gray-100 @min-[35rem]:pl-4">
+          <TodayShiftSummary status={clockStatus} fallbackName={workInfo?.shiftName} />
+        </div>
 
-      {/* Shift */}
-      <div className="flex-shrink-0">
-        <TodayShiftSummary status={clockStatus} fallbackName={workInfo?.shiftName} />
-      </div>
-
-      {/* Divider */}
-      <div className="h-10 w-px bg-gray-100 flex-shrink-0" />
-
-      {/* Action button */}
-      <div className="flex-shrink-0">
-        {!user?.employeeId ? null : clockStatus?.attendanceRequired === false && !isClockedIn ? (
-          <span className="text-sm text-slate-600">Attendance exempt</span>
-        ) : isClockedIn ? (
-          <button
-            onClick={handleCheckOut}
-            disabled={actionLoading}
-            className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-red-500 hover:bg-red-600 text-white text-sm font-semibold transition-colors disabled:opacity-50"
-          >
-            <ClockIcon className="h-4 w-4" />
-            {actionLoading ? 'Processing…' : 'Check Out'}
-          </button>
-        ) : (
-          <button
-            onClick={handleCheckIn}
-            disabled={actionLoading}
-            className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-semibold transition-colors disabled:opacity-50"
-          >
-            <ClockIcon className="h-4 w-4" />
-            {actionLoading ? 'Processing…' : 'Check In'}
-          </button>
-        )}
+        {/* Action button */}
+        <div className="min-w-0">
+          {!user?.employeeId ? null : clockStatus?.attendanceRequired === false && !isClockedIn ? (
+            <span className="text-sm text-slate-600">Attendance exempt</span>
+          ) : isClockedIn ? (
+            <button
+              onClick={handleCheckOut}
+              disabled={actionLoading}
+              className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-red-500 hover:bg-red-600 text-white text-sm font-semibold transition-colors disabled:opacity-50"
+            >
+              <ClockIcon className="h-4 w-4" />
+              {actionLoading ? 'Processing…' : 'Check Out'}
+            </button>
+          ) : (
+            <button
+              onClick={handleCheckIn}
+              disabled={actionLoading}
+              className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-semibold transition-colors disabled:opacity-50"
+            >
+              <ClockIcon className="h-4 w-4" />
+              {actionLoading ? 'Processing…' : 'Check In'}
+            </button>
+          )}
+        </div>
       </div>
     </div>
   )
@@ -734,7 +727,7 @@ function PersonalAttendanceSection({ attendanceDashboard }) {
     <div className="grid grid-cols-1 xl:grid-cols-3 gap-6 mb-6">
       {/* Attendance Calendar */}
       <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-5">
-        <div className="flex items-center justify-between mb-4">
+        <div className="flex flex-wrap items-center justify-between gap-2 mb-4">
           <h3 className="text-base font-bold text-indigo-700">Attendance Calendar</h3>
           <div className="flex items-center gap-1">
             <button onClick={prevMonth} className="p-1.5 rounded-lg border border-gray-200 hover:bg-gray-50 transition-colors">
@@ -768,7 +761,7 @@ function PersonalAttendanceSection({ attendanceDashboard }) {
                 return (
                   <div key={ds} className="flex justify-center items-center py-0.5">
                     <span className={`
-                      w-8 h-8 rounded-full text-xs font-semibold flex items-center justify-center
+                      w-8 max-w-full h-8 rounded-full text-xs font-semibold flex items-center justify-center
                       ${isFuture ? 'text-gray-300' : meta.circle}
                       ${isToday && !isFuture ? 'ring-2 ring-offset-1 ring-white shadow' : ''}
                     `}>
@@ -934,17 +927,18 @@ export default function DashboardPage() {
         actions={
           <button
             type="button"
-            onClick={() => navigate('/carr/dashboard')}
-            className="ml-3 inline-flex min-h-10 shrink-0 items-center gap-2 whitespace-nowrap rounded-lg bg-indigo-600 px-3.5 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-indigo-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600"
+            onClick={() => navigate('/performance')}
+            className="inline-flex min-h-10 shrink-0 items-center gap-2 whitespace-nowrap rounded-lg bg-indigo-600 px-3.5 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-indigo-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600"
           >
-            Open CARR <ChevronRightIcon aria-hidden="true" className="size-4" />
+            Performance <ChevronRightIcon aria-hidden="true" className="size-4" />
           </button>
         }
       />
-      {/* Welcome + Check-in side by side */}
-      <div className="flex flex-col xl:flex-row items-stretch gap-4 mb-6">
-        <div className="flex-1 flex"><WelcomeHeader /></div>
-        <div className="flex"><CheckInOutWidget user={user} /></div>
+      <div className="@container mb-6">
+        <div className="grid min-w-0 gap-4 @min-[70rem]:grid-cols-[minmax(31.25rem,5fr)_minmax(0,6fr)]">
+          <WelcomeHeader />
+          <CheckInOutWidget user={user} />
+        </div>
       </div>
 
       {/* Personal attendance calendar + quick actions + notifications — all roles */}

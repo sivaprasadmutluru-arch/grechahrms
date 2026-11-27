@@ -52,11 +52,11 @@ const ROLE_OPTIONS_BY_LEVEL = {
 
 const StatCard = memo(function StatCard({ label, value, icon, color }) {
   return (
-    <div className="bg-white rounded-2xl border border-gray-100 shadow-sm px-5 py-4 flex items-center gap-4">
-      <div className={`w-11 h-11 rounded-xl flex items-center justify-center text-xl ${color}`}>
+    <div className="bg-white rounded-2xl border border-gray-100 shadow-sm flex min-w-0 items-center gap-2 px-3 py-3 sm:gap-4 sm:px-5 sm:py-4">
+      <div className={`w-9 h-9 shrink-0 rounded-xl flex items-center justify-center text-lg sm:w-11 sm:h-11 sm:text-xl ${color}`}>
         {icon}
       </div>
-      <div>
+      <div className="min-w-0 wrap-anywhere">
         <p className="text-2xl font-bold text-gray-900 leading-tight">{value}</p>
         <p className="text-xs text-gray-500 font-medium">{label}</p>
       </div>
@@ -701,7 +701,7 @@ export default function EmployeesPage() {
       </div>
 
       {/* Tabs */}
-      <div className="flex gap-1 border-b border-gray-200">
+      <div className="flex flex-wrap gap-1 border-b border-gray-200">
         {[{ id: 'employees', label: 'Employees' }, { id: 'archived', label: 'Archived Employees' }, { id: 'leavers', label: 'Leavers' }].map(t => (
           <button
             key={t.id}
@@ -739,7 +739,7 @@ export default function EmployeesPage() {
       ) : (
       <>
       {/* Stats */}
-      <div className="grid grid-cols-2 sm:grid-cols-5 gap-4">
+      <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-5 gap-3 sm:gap-4">
         <StatCard label="Total Employees" value={pagination.total || employees.length} icon="👥" color="bg-indigo-50 text-indigo-600" />
         <StatCard label="Active" value={activeCount} icon="✅" color="bg-emerald-50 text-emerald-600" />
         <StatCard label="Inactive" value={inactiveCount} icon="⏸️" color="bg-red-50 text-red-500" />
@@ -751,7 +751,7 @@ export default function EmployeesPage() {
       <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-4">
         <div className="flex flex-wrap items-center gap-3">
           {/* Search */}
-          <div className="relative flex-1 min-w-[220px]">
+          <div className="relative w-full min-w-0 sm:w-auto sm:flex-[1_1_14rem]">
             <svg className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-4.35-4.35M17 11A6 6 0 1 1 5 11a6 6 0 0 1 12 0z" />
             </svg>

@@ -54,7 +54,7 @@ export default function Combobox({
           <HeadlessCombobox.Button className="absolute inset-y-0 right-0 flex items-center pr-2">
             <ChevronDownIcon className="h-4 w-4 text-gray-400" aria-hidden="true" />
           </HeadlessCombobox.Button>
-          <HeadlessCombobox.Options className="absolute z-30 mt-1 max-h-60 w-full overflow-auto rounded-lg border border-gray-200 bg-white py-1 text-sm shadow-lg focus:outline-none">
+          <HeadlessCombobox.Options anchor="bottom" className="z-[60] mt-1 max-h-60 w-[var(--input-width)] overflow-auto rounded-lg border border-gray-200 bg-white py-1 text-sm shadow-lg focus:outline-none">
             {filtered.length === 0 && (
               <div className="px-3 py-2 text-gray-400">{emptyText}</div>
             )}

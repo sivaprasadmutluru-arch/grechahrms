@@ -10,11 +10,11 @@ import Spinner from '../../components/common/Spinner'
 
 function StatCard({ icon: Icon, label, value, sub, color }) {
   return (
-    <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-5 flex items-start gap-4">
+    <div className="bg-white rounded-2xl border border-gray-100 shadow-sm flex flex-col items-start gap-2 p-3 sm:p-4 xl:flex-row xl:gap-4">
       <div className={`w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0 ${color}`}>
         <Icon className="h-5 w-5 text-white" />
       </div>
-      <div>
+      <div className="min-w-0 wrap-anywhere">
         <p className="text-2xl font-bold text-gray-800">{value ?? '—'}</p>
         <p className="text-sm font-medium text-gray-600">{label}</p>
         {sub && <p className="text-xs text-gray-400 mt-0.5">{sub}</p>}
@@ -25,8 +25,8 @@ function StatCard({ icon: Icon, label, value, sub, color }) {
 
 function StatusRow({ label, active, suspended, inactive }) {
   return (
-    <div className="flex items-center gap-4 py-3 border-b border-gray-50 last:border-0">
-      <span className="text-sm text-gray-600 w-32">{label}</span>
+    <div className="flex flex-wrap items-center gap-x-4 gap-y-2 py-3 border-b border-gray-50 last:border-0">
+      <span className="w-full text-sm text-gray-600 sm:w-32">{label}</span>
       <span className="flex items-center gap-1.5 text-sm text-green-600 font-medium">
         <CheckCircleIcon className="h-4 w-4" />{active ?? 0} Active
       </span>

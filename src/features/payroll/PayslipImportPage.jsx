@@ -95,9 +95,9 @@ export default function PayslipImportPage() {
   const months = importInfo?.months_data || []
 
   return (
-    <div className="p-6 max-w-5xl mx-auto space-y-6">
+    <div className="max-w-5xl mx-auto space-y-6 sm:p-4">
       {/* Header */}
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h1 className="text-2xl font-bold text-gray-900">Payslip Import</h1>
           <p className="text-sm text-gray-500 mt-1">
@@ -200,19 +200,19 @@ export default function PayslipImportPage() {
         {/* Step 2 */}
         <div className="flex items-start gap-4 p-4 bg-gray-50 rounded-lg">
           <span className="flex-shrink-0 w-7 h-7 rounded-full bg-gray-500 text-white text-sm font-bold flex items-center justify-center">2</span>
-          <div className="flex-1">
+          <div className="min-w-0 flex-1">
             <p className="text-sm font-medium text-gray-800">Upload the completed file</p>
             <p className="text-xs text-gray-500 mt-0.5">Supports .xlsx, .xls, or .csv</p>
-            <div className="mt-2 flex items-center gap-3">
+            <div className="mt-2 flex min-w-0 flex-wrap items-center gap-3">
               <input
                 ref={fileRef}
                 type="file"
                 accept=".xlsx,.xls,.csv"
                 onChange={handleFileChange}
-                className="text-sm text-gray-600 file:mr-3 file:py-1.5 file:px-3 file:rounded-lg file:border-0 file:text-xs file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100"
+                className="w-full min-w-0 text-sm text-gray-600 file:mr-3 file:py-1.5 file:px-3 file:rounded-lg file:border-0 file:text-xs file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100"
               />
               {file && (
-                <span className="text-xs text-gray-500">{file.name}</span>
+                <span className="min-w-0 wrap-anywhere text-xs text-gray-500">{file.name}</span>
               )}
             </div>
           </div>

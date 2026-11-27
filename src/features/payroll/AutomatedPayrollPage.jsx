@@ -60,13 +60,13 @@ function fmtNum(v) { return v != null ? Number(v).toFixed(1) : '0' }
 
 function StepBar({ current }) {
   return (
-    <div className="flex items-center gap-0 mb-8">
+    <div className="mb-8 grid grid-cols-2 gap-3 sm:flex sm:items-start sm:gap-0">
       {STEPS.map((step, idx) => {
         const done    = current > step.id
         const active  = current === step.id
         return (
-          <div key={step.id} className="flex items-center flex-1">
-            <div className="flex flex-col items-center">
+          <div key={step.id} className="flex min-w-0 flex-1 items-start justify-center">
+            <div className="flex min-w-0 flex-col items-center text-center">
               <div className={`w-9 h-9 rounded-full flex items-center justify-center text-sm font-semibold border-2 transition-all ${
                 done   ? 'bg-indigo-600 border-indigo-600 text-white'
                 : active ? 'bg-white border-indigo-600 text-indigo-600'
@@ -74,12 +74,12 @@ function StepBar({ current }) {
               }`}>
                 {done ? <CheckCircleIcon className="w-5 h-5" /> : step.id}
               </div>
-              <span className={`mt-1 text-xs font-medium whitespace-nowrap ${active ? 'text-indigo-600' : done ? 'text-gray-700' : 'text-gray-400'}`}>
+              <span className={`mt-1 text-xs font-medium ${active ? 'text-indigo-600' : done ? 'text-gray-700' : 'text-gray-400'}`}>
                 {step.label}
               </span>
             </div>
             {idx < STEPS.length - 1 && (
-              <div className={`flex-1 h-0.5 mx-2 mt-[-14px] ${done ? 'bg-indigo-600' : 'bg-gray-200'}`} />
+              <div className={`mx-2 mt-[18px] hidden h-0.5 flex-1 sm:block ${done ? 'bg-indigo-600' : 'bg-gray-200'}`} />
             )}
           </div>
         )
@@ -408,7 +408,7 @@ export default function AutomatedPayrollPage() {
           {/* Working Days & Weekend Rules */}
           <div className="border border-gray-200 rounded-lg p-4 space-y-3">
             <h3 className="text-sm font-semibold text-gray-700">Working Days & Weekend Rules</h3>
-            <div className="flex gap-6">
+            <div className="flex flex-wrap gap-x-6 gap-y-2">
               <label className="flex items-center gap-2 text-sm text-gray-700 cursor-pointer">
                 <input
                   type="checkbox"

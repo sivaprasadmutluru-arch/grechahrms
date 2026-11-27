@@ -1,5 +1,6 @@
-import { useEffect, Suspense } from 'react'
-import { Navigate, Outlet } from 'react-router-dom'
+import { useEffect, useState, useSyncExternalStore, Suspense } from 'react'
+import { Dialog, DialogPanel, DialogTitle } from '@headlessui/react'
+import { Navigate, Outlet, useLocation } from 'react-router-dom'
 import { useDispatch, useSelector } from 'react-redux'
 import Sidebar from './Sidebar'
 import Topbar from './Topbar'
@@ -14,7 +15,22 @@ import QuickStartTour from './QuickStartTour'
 import AnnouncementAlert from '../../features/announcements/AnnouncementAlert'
 import CheckoutReminder from '../../features/attendance/CheckoutReminder'
 
+const wideNavigation = window.matchMedia('(min-width: 64rem)')
+
+function subscribeToNavigationWidth(callback) {
+  wideNavigation.addEventListener('change', callback)
+  return () => wideNavigation.removeEventListener('change', callback)
+}
+
 export default function AppLayout() {
+  const location = useLocation()
+  const showDesktopSidebar = useSyncExternalStore(subscribeToNavigationWidth, () => wideNavigation.matches)
+  const [navigationLocation, setNavigationLocation] = useState(null)
+  const navigationOpen = !showDesktopSidebar && navigationLocation === location
+  useEffect(() => {
+    if (showDesktopSidebar) setNavigationLocation(null)
+  }, [showDesktopSidebar])
+
   const dispatch = useDispatch()
   const isAuthenticated = useSelector(selectIsAuthenticated)
   const roles = useSelector(selectRoles)
@@ -57,16 +73,28 @@ export default function AppLayout() {
   if (!isAuthenticated) return <Navigate to="/login" replace />
   if (user?.mustChangePassword) return <Navigate to="/change-password-required" replace />
   return (
-    <div className="flex h-screen bg-gray-50 overflow-hidden">
-      <Sidebar />
-      <div className="flex flex-col flex-1 overflow-hidden">
-        <Topbar />
-        <main className="flex-1 overflow-auto p-6">
+    <div className="flex h-dvh overflow-hidden bg-gray-50">
+      {showDesktopSidebar && <Sidebar />}
+      <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
+        <Topbar
+          onOpenNavigation={showDesktopSidebar ? undefined : () => setNavigationLocation(location)}
+          navigationOpen={navigationOpen}
+        />
+        <main className="flex-1 min-w-0 overflow-auto p-3 sm:p-4 xl:p-6">
           <Suspense fallback={<PageSkeleton />}>
             <Outlet />
           </Suspense>
         </main>
       </div>
+      <Dialog open={navigationOpen} onClose={() => setNavigationLocation(null)} className="relative z-50">
+        <div className="fixed inset-0 bg-black/40" aria-hidden="true" />
+        <div className="fixed inset-0 flex">
+          <DialogPanel className="h-full max-w-full">
+            <DialogTitle className="sr-only">Main navigation</DialogTitle>
+            <Sidebar onClose={() => setNavigationLocation(null)} />
+          </DialogPanel>
+        </div>
+      </Dialog>
       {roles.includes('EMPLOYEE') && <UnresolvedRegularisationReminder suspended={hasPunchReasonPrompt} />}
       <LatePunchReasonDialog />
       {userId != null && <CheckoutReminder userId={userId} key={`checkout:${userId}:${selectedCompanyId || user.companyId || ''}:${branchFilter || ''}`} />}

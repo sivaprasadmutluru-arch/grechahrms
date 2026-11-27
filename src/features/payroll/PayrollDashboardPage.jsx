@@ -101,12 +101,12 @@ export default function PayrollDashboardPage() {
   return (
     <div className="space-y-6">
       {/* Page Header */}
-      <div className="flex items-start justify-between">
+      <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h1 className="text-2xl font-bold text-gray-900 tracking-tight">Payroll Dashboard</h1>
           <p className="text-sm text-gray-500 mt-1">Payslip status, salary totals and department analytics</p>
         </div>
-        <div className="flex items-center gap-3">
+        <div className="flex min-w-0 flex-wrap items-center gap-3">
           <select
             value={selectedMonth}
             onChange={e => setSelectedMonth(e.target.value)}

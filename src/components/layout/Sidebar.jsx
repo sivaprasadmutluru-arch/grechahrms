@@ -5,7 +5,7 @@ import {
   Banknote, Archive, Folder, UserPlus, BarChart3,
   LogIn, LogOut, Ticket, FileText, ShieldCheck, PieChart,
   Bell, ChevronLeft, ChevronRight, Settings, Receipt,
-  ChevronDown, Megaphone, ScanFace, Fingerprint, MapPinHouse,
+  ChevronDown, Megaphone, X, ScanFace, Fingerprint, MapPinHouse,
 } from 'lucide-react'
 import { useSelector } from 'react-redux'
 import useAuth from '../../hooks/useAuth'
@@ -67,6 +67,7 @@ const ATTENDANCE_GROUP = {
     { label: 'Register',           to: '/attendance/register' },
     { label: 'Work Records',       to: '/attendance/work-records' },
     { label: 'Regularisation',     to: '/attendance/regularisation' },
+    { label: 'Report Schedules',    to: '/attendance/report-schedules' },
     { label: 'Shift Allocations',  to: '/attendance/shift-allocations' },
     { label: 'Rotating Shifts',    to: '/attendance/rotating-shifts' },
     { label: 'Settings',           to: '/attendance/settings' },
@@ -179,13 +180,9 @@ const PERFORMANCE_GROUP = {
   icon: BarChart3,
   group: 'performance',
   children: [
-    { label: 'Review Cycles',        to: '/performance/cycles' },
-    { label: 'Objectives',           to: '/performance/objectives' },
-    { label: 'Feedback',             to: '/performance/feedback' },
-    { label: 'Anonymous Feedback',   to: '/performance/anonymous-feedback' },
-    { label: 'Meetings',             to: '/performance/meetings' },
-    { label: 'Question Templates',   to: '/performance/question-templates' },
-    { label: 'Bonus Settings',       to: '/performance/bonus-settings' },
+    { label: 'Job Description', to: '/performance/library' },
+    { label: 'Performance Review', to: '/performance' },
+    { label: 'Settings', to: '/performance/settings' },
   ],
 }
 
@@ -576,7 +573,7 @@ function getNavSections(auth) {
       {
         title: 'Talent',
         items: [
-          { label: 'Performance', to: '/performance/cycles', icon: BarChart3 },
+          PERFORMANCE_GROUP,
           { label: 'Projects',    to: '/projects',           icon: Folder },
         ],
       },
@@ -607,6 +604,10 @@ function getNavSections(auth) {
         { label: 'Loans', to: '/payroll/loans', icon: Banknote },
         { label: 'My Documents', to: '/documents/my', icon: FileText },
       ],
+    },
+    {
+      title: 'Talent',
+      items: [{ label: 'Performance', to: '/performance', icon: BarChart3 }],
     },
     {
       title: 'Support',
@@ -650,7 +651,7 @@ function applyModuleVisibility(sections, visibility) {
 
 // ─── Component ────────────────────────────────────────────────────────────────
 
-export default function Sidebar() {
+export default function Sidebar({ onClose }) {
   const [collapsed, setCollapsed] = useState(false)
   const [logoutConfirmOpen, setLogoutConfirmOpen] = useState(false)
   const [openGroups, setOpenGroups] = useState(new Set())
@@ -706,7 +707,13 @@ export default function Sidebar() {
   const [logoLoadError, setLogoLoadError] = useState(false)
   useEffect(() => { setLogoLoadError(false) }, [displayLogoUrl])
 
-  const sections = applyModuleVisibility(getNavSections(auth), moduleVisibility)
+  const managesPerformanceSettings = auth.hasRole('PLATFORM_SUPER_ADMIN', 'SUPER_ADMIN', 'ENTERPRISE_ADMIN', 'COMPANY_ADMIN', 'BRANCH_ADMIN', 'HR_MANAGER')
+  const sections = applyModuleVisibility(getNavSections(auth), moduleVisibility).map(section => ({
+    ...section,
+    items: section.items.map(item => item.group === 'performance' && !managesPerformanceSettings
+      ? { ...item, children: item.children.filter(child => child.to !== '/performance/settings') }
+      : item),
+  }))
 
   // Auto-expand groups whose child route is active
   useEffect(() => {
@@ -776,7 +783,7 @@ export default function Sidebar() {
         }
       `}</style>
     <aside
-      className={`group/sidebar relative flex h-screen flex-shrink-0 flex-col overflow-hidden border-r border-white/[0.10] text-white transition-[width] duration-500 ease-[cubic-bezier(0.22,1,0.36,1)] ${
+      className={`group/sidebar relative flex h-dvh max-w-[calc(100dvw-2rem)] flex-shrink-0 flex-col overflow-hidden border-r border-white/[0.10] text-white transition-[width] duration-500 ease-[cubic-bezier(0.22,1,0.36,1)] ${
         collapsed ? 'w-[72px]' : 'w-60'
       }`}
       style={{
@@ -808,12 +815,13 @@ export default function Sidebar() {
         </div>
         {!collapsed && (
           <button
-            onClick={() => setCollapsed(c => !c)}
+            onClick={onClose || (() => setCollapsed(c => !c))}
+            data-autofocus={onClose ? true : undefined}
             className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-lg text-[#D8D6F2]/70 transition-all duration-300 hover:bg-white/[0.08] hover:text-white"
-            title="Collapse sidebar"
-            aria-label="Collapse sidebar"
+            title={onClose ? 'Close navigation' : 'Collapse sidebar'}
+            aria-label={onClose ? 'Close navigation' : 'Collapse sidebar'}
           >
-            <ChevronLeft className="h-4 w-4" strokeWidth={2.2} />
+            {onClose ? <X className="h-4 w-4" /> : <ChevronLeft className="h-4 w-4" strokeWidth={2.2} />}
           </button>
         )}
       </div>

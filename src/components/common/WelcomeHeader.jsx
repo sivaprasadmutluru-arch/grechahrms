@@ -33,39 +33,38 @@ export default function WelcomeHeader() {
   }).format(new Date())
 
   return (
-    <div className="bg-white rounded-2xl border border-gray-100 shadow-sm px-6 py-5 flex items-center gap-6 w-full">
-      {/* Avatar + name */}
-      <div className="flex items-center gap-4 flex-1 min-w-0">
-        <Avatar name={firstName} src={photoUrl} size="lg" />
-        <div className="min-w-0">
-          <p className="text-xs font-medium text-gray-400 uppercase tracking-wide">Welcome back</p>
-          <h2 className="text-base font-bold text-gray-900 truncate">{firstName}</h2>
-          {jobPosition && (
-            <p className="text-xs font-medium text-indigo-600 mt-0.5 truncate">{jobPosition}</p>
+    <div className="@container w-full min-w-0 rounded-2xl border border-gray-100 bg-white px-4 py-4 shadow-sm sm:px-6 sm:py-5">
+      <div className="grid items-center gap-3 @min-[28rem]:grid-cols-[minmax(0,1fr)_minmax(0,1fr)] @min-[28rem]:gap-4">
+        {/* Avatar + name */}
+        <div className="flex min-w-0 items-center gap-3">
+          <Avatar name={firstName} src={photoUrl} size="lg" className="shrink-0" />
+          <div className="min-w-0">
+            <p className="text-xs font-medium text-gray-400 uppercase tracking-wide">Welcome back</p>
+            <h2 className="text-base font-bold text-gray-900 wrap-anywhere">{firstName}</h2>
+            {jobPosition && (
+              <p className="text-xs font-medium text-indigo-600 mt-0.5 wrap-anywhere">{jobPosition}</p>
+            )}
+          </div>
+        </div>
+
+        {/* Date + company */}
+        <div className="min-w-0 border-t border-gray-100 pt-3 @min-[28rem]:border-t-0 @min-[28rem]:border-l @min-[28rem]:pt-0 @min-[28rem]:pl-4 @min-[28rem]:text-right">
+          <p className="text-xs font-medium text-gray-400 uppercase tracking-wide">Today</p>
+          <p className="text-sm font-semibold text-gray-800 mt-0.5 wrap-anywhere">{dateStr}</p>
+          {companyName && (
+            <div className="flex items-center gap-1.5 mt-1 @min-[28rem]:justify-end">
+              {companyLogoUrl && !logoLoadError && (
+                <img
+                  src={companyLogoUrl}
+                  alt=""
+                  className="h-3.5 w-3.5 shrink-0 rounded object-contain"
+                  onError={() => setLogoLoadError(true)}
+                />
+              )}
+              <p className="min-w-0 wrap-anywhere text-xs text-gray-400">{companyName}</p>
+            </div>
           )}
         </div>
-      </div>
-
-      {/* Divider */}
-      <div className="h-10 w-px bg-gray-100 flex-shrink-0" />
-
-      {/* Date + company */}
-      <div className="text-right flex-shrink-0">
-        <p className="text-xs font-medium text-gray-400 uppercase tracking-wide">Today</p>
-        <p className="text-sm font-semibold text-gray-800 mt-0.5">{dateStr}</p>
-        {companyName && (
-          <div className="flex items-center justify-end gap-1.5 mt-1">
-            {companyLogoUrl && !logoLoadError && (
-              <img
-                src={companyLogoUrl}
-                alt="logo"
-                className="h-3.5 w-3.5 rounded object-contain"
-                onError={() => setLogoLoadError(true)}
-              />
-            )}
-            <p className="text-xs text-gray-400">{companyName}</p>
-          </div>
-        )}
       </div>
     </div>
   )

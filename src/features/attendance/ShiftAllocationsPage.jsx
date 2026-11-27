@@ -82,7 +82,7 @@ export default function ShiftAllocationsPage() {
         }
       />
 
-      <div className="mt-4 flex gap-2">
+      <div className="mt-4 flex flex-wrap gap-2">
         {STATUS_OPTIONS.map(s => (
           <button
             key={s}

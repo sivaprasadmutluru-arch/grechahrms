@@ -62,15 +62,15 @@ export default function BranchSwitcher() {
     <Menu as="div" className="relative">
       {({ open }) => (
         <>
-          <MenuButton className="flex items-center gap-1.5 pl-2.5 pr-2 py-1.5 rounded-lg border border-gray-200 bg-white hover:bg-gray-50 transition-colors text-sm font-medium text-gray-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 focus-visible:ring-offset-1">
+          <MenuButton aria-label="Switch branch" className="flex items-center gap-1.5 pl-2.5 pr-2 py-1.5 rounded-lg border border-gray-200 bg-white hover:bg-gray-50 transition-colors text-sm font-medium text-gray-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 focus-visible:ring-offset-1">
             <BuildingOffice2Icon className="h-4 w-4 text-gray-500" />
-            <span className="max-w-[8.5rem] truncate">{displayName}</span>
+            <span className="hidden max-w-[8.5rem] truncate sm:block">{displayName}</span>
             <ChevronDownIcon className={`h-3.5 w-3.5 text-gray-400 transition-transform ${open ? 'rotate-180' : ''}`} />
           </MenuButton>
 
           <MenuItems
             anchor="bottom end"
-            className="w-64 origin-top-right rounded-xl border border-gray-200 bg-white shadow-lg ring-1 ring-black/5 focus:outline-none [--anchor-gap:6px]"
+            className="z-40 w-64 max-w-[calc(100dvw-1rem)] origin-top-right rounded-xl border border-gray-200 bg-white shadow-lg ring-1 ring-black/5 focus:outline-none [--anchor-gap:6px]"
           >
             <div className="max-h-80 overflow-y-auto py-1">
               <MenuItem>

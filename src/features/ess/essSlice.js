@@ -123,7 +123,10 @@ const essSlice = createSlice({
     const rejected = (state, action) => { state.loading = false; state.error = action.payload }
 
     builder
-      .addCase('auth/logout', (state) => { state.punchReasonPrompt = null })
+      .addCase('auth/logout', (state) => {
+        state.punchReasonPrompt = null
+        state.leaveBalance = []
+      })
       .addCase(fetchMyProfile.pending, pending)
       .addCase(fetchMyProfile.fulfilled, (state, action) => { state.loading = false; state.profile = action.payload })
       .addCase(fetchMyProfile.rejected, rejected)
@@ -133,6 +136,8 @@ const essSlice = createSlice({
       .addCase(fetchMyLeave.rejected, rejected)
 
       .addCase(fetchEssLeaveTypes.fulfilled, (state, action) => { state.leaveTypes = action.payload })
+      .addCase(fetchMyBalance.fulfilled, (state, action) => { state.leaveBalance = action.payload })
+      .addCase(fetchMyBalance.rejected, (state) => { state.leaveBalance = [] })
 
       .addCase(applyLeave.pending, pending)
       .addCase(applyLeave.fulfilled, (state, action) => { state.loading = false; state.leaveRequests = [action.payload, ...state.leaveRequests] })

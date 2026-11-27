@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { Link } from 'react-router-dom'
 import { useDispatch, useSelector } from 'react-redux'
 import { useForm } from 'react-hook-form'
 import toast from 'react-hot-toast'
@@ -233,11 +234,12 @@ export default function OnboardingPage() {
 
   return (
     <div>
-      <PageHeader title="Onboarding" subtitle="Manage onboarding portals, stages, and candidate progress" />
+      <PageHeader title="Onboarding" subtitle="Manage onboarding portals, stages, and candidate progress"
+        actions={<Link to="/performance?newJoiners=1" className="rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50">Assign new joiner JD</Link>} />
 
       {/* Tabs */}
       <div className="border-b border-gray-200 mb-6">
-        <nav className="flex gap-4">
+        <nav className="flex flex-wrap gap-4">
           {TABS.map(tab => (
             <button key={tab} onClick={() => setActiveTab(tab)}
               className={`pb-3 px-1 text-sm font-medium border-b-2 transition-colors ${activeTab === tab ? 'border-indigo-600 text-indigo-600' : 'border-transparent text-gray-500 hover:text-gray-700'}`}>

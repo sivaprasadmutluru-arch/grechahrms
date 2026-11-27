@@ -1,16 +1,17 @@
 import { Suspense, lazy } from 'react'
-import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
+import { BrowserRouter, Routes, Route, Navigate, useSearchParams } from 'react-router-dom'
 import { Toaster } from 'react-hot-toast'
 import AppLayout from './components/layout/AppLayout'
 import MutationLoadingCard from './components/common/MutationLoadingCard'
 import ProtectedRoute from './components/common/ProtectedRoute'
-import SecureCarrRoute from './features/carr/SecureCarrRoute'
 
+const SmartPerformancePage = lazy(() => import('./features/performance/SmartPerformancePage'))
 const LoginPage               = lazy(() => import('./features/auth/LoginPage'))
 const ForgotPasswordPage      = lazy(() => import('./features/auth/ForgotPasswordPage'))
 const ForbiddenPage           = lazy(() => import('./features/auth/ForbiddenPage'))
 const SuspendedPage           = lazy(() => import('./features/auth/SuspendedPage'))
 const PrivacyPolicyPage       = lazy(() => import('./features/legal/PrivacyPolicyPage'))
+const TermsOfServicePage     = lazy(() => import('./features/legal/TermsOfServicePage'))
 const AccountSettingsPage     = lazy(() => import('./features/auth/AccountSettingsPage'))
 const RequiredPasswordChangePage = lazy(() => import('./features/auth/RequiredPasswordChangePage'))
 const GeneralSettingsPage     = lazy(() => import('./features/settings/GeneralSettingsPage'))
@@ -42,10 +43,6 @@ const OnboardingPage          = lazy(() => import('./features/onboarding/Onboard
 const OffboardingPage         = lazy(() => import('./features/offboarding/OffboardingPage'))
 const OffboardingPlansPage    = lazy(() => import('./features/offboarding/OffboardingPlansPage'))
 const OffboardingSettingsPage = lazy(() => import('./features/offboarding/OffboardingSettingsPage'))
-const PerformanceCyclesPage   = lazy(() => import('./features/performance/PerformanceCyclesPage'))
-const CarrModulePage          = lazy(() => import('./features/carr/CarrModulePage'))
-const ObjectivesPage          = lazy(() => import('./features/performance/ObjectivesPage'))
-const FeedbackPage            = lazy(() => import('./features/performance/FeedbackPage'))
 const HelpdeskPage            = lazy(() => import('./features/helpdesk/HelpdeskPage'))
 const HelpCenterPage          = lazy(() => import('./features/helpdesk/HelpCenterPage'))
 const PlatformSupportPage     = lazy(() => import('./features/helpdesk/PlatformSupportPage'))
@@ -75,10 +72,6 @@ const RotatingSchedulesPage   = lazy(() => import('./features/attendance/Rotatin
 const InterviewsPage          = lazy(() => import('./features/recruitment/InterviewsPage'))
 const SkillZonePage           = lazy(() => import('./features/recruitment/SkillZonePage'))
 const RejectReasonsPage       = lazy(() => import('./features/recruitment/RejectReasonsPage'))
-const AnonymousFeedbackPage   = lazy(() => import('./features/performance/AnonymousFeedbackPage'))
-const QuestionTemplatesPage   = lazy(() => import('./features/performance/QuestionTemplatesPage'))
-const BonusSettingsPage       = lazy(() => import('./features/performance/BonusSettingsPage'))
-const MeetingsPage            = lazy(() => import('./features/performance/MeetingsPage'))
 const FAQPage                 = lazy(() => import('./features/helpdesk/FAQPage'))
 const ClaimsPage              = lazy(() => import('./features/helpdesk/ClaimsPage'))
 const DepartmentManagersPage  = lazy(() => import('./features/helpdesk/DepartmentManagersPage'))
@@ -129,6 +122,7 @@ const GratuityPage            = lazy(() => import('./features/payroll/GratuityPa
 const PayslipImportPage       = lazy(() => import('./features/payroll/PayslipImportPage'))
 const ManualPayrollPage       = lazy(() => import('./features/payroll/ManualPayrollPage'))
 const AttendanceDashboardPage = lazy(() => import('./features/attendance/AttendanceDashboardPage'))
+const AttendanceReportSchedulesPage = lazy(() => import('./features/attendance/AttendanceReportSchedulesPage'))
 const RecruitmentPipelinePage = lazy(() => import('./features/recruitment/RecruitmentPipelinePage'))
 const RecruitmentDashboardPage = lazy(() => import('./features/recruitment/RecruitmentDashboardPage'))
 const LinkedInSettingsPage    = lazy(() => import('./features/recruitment/LinkedInSettingsPage'))
@@ -136,6 +130,12 @@ const OrgChartPage            = lazy(() => import('./features/employees/OrgChart
 const ESSPage                 = lazy(() => import('./features/ess/ESSPage'))
 const MailAutomationPage      = lazy(() => import('./features/mail-automation/MailAutomationPage'))
 const PlatformMonitorPage     = lazy(() => import('./features/platform/PlatformMonitorPage'))
+
+function PreviousPerformanceLink() {
+  const [params] = useSearchParams()
+  const record = params.get('record')
+  return <Navigate replace to={record ? `/performance/archive?id=${encodeURIComponent(record)}` : '/performance'} />
+}
 
 export default function App() {
   return (
@@ -149,8 +149,7 @@ export default function App() {
           <Route path="/forgot-password" element={<ForgotPasswordPage />} />
           <Route path="/suspended" element={<SuspendedPage />} />
           <Route path="/privacy-policy" element={<PrivacyPolicyPage />} />
-          <Route path="/carr/login" element={<LoginPage />} />
-          <Route path="/carr/*" element={<SecureCarrRoute><ProtectedRoute roles={['PLATFORM_SUPER_ADMIN', 'ENTERPRISE_ADMIN', 'BRANCH_ADMIN', 'HR_MANAGER', 'DEPARTMENT_MANAGER', 'TEAM_LEAD', 'EMPLOYEE']} element={<CarrModulePage />} /></SecureCarrRoute>} />
+          <Route path="/terms-and-conditions" element={<TermsOfServicePage />} />
           <Route path="/" element={<AppLayout />}>
           <Route index element={<Navigate to="/dashboard" replace />} />
           <Route path="dashboard" element={<DashboardPage />} />
@@ -236,6 +235,7 @@ export default function App() {
           <Route path="attendance/regularisation"  element={<AttendanceRegularisationPage />} />
           <Route path="attendance/my-team"          element={<TeamAttendancePage />} />
           <Route path="attendance/calendar"         element={<AttendanceCalendarPage />} />
+          <Route path="attendance/report-schedules" element={<ProtectedRoute roles={['PLATFORM_SUPER_ADMIN', 'SUPER_ADMIN', 'COMPANY_ADMIN', 'ENTERPRISE_ADMIN', 'BRANCH_ADMIN', 'HR_MANAGER']} element={<AttendanceReportSchedulesPage />} />} />
           <Route path="attendance/register"         element={<ProtectedRoute roles={['PLATFORM_SUPER_ADMIN', 'ENTERPRISE_ADMIN', 'BRANCH_ADMIN', 'HR_MANAGER']} element={<AttendanceRegisterPage />} />} />
           <Route path="attendance/settings"         element={<ProtectedRoute roles={['PLATFORM_SUPER_ADMIN', 'ENTERPRISE_ADMIN', 'BRANCH_ADMIN', 'HR_MANAGER']} element={<AttendanceSettingsPage />} />} />
           <Route path="attendance/work-records"     element={<ProtectedRoute roles={['PLATFORM_SUPER_ADMIN', 'ENTERPRISE_ADMIN', 'BRANCH_ADMIN', 'HR_MANAGER']} element={<WorkRecordsPage />} />} />
@@ -260,13 +260,17 @@ export default function App() {
           <Route path="projects"                 element={<ProjectsPage />} />
           <Route path="projects/:id"             element={<ProjectDetailPage />} />
           <Route path="projects/timesheets"      element={<TimeSheetsPage />} />
-          <Route path="performance/cycles"             element={<ProtectedRoute roles={['PLATFORM_SUPER_ADMIN', 'ENTERPRISE_ADMIN', 'BRANCH_ADMIN', 'HR_MANAGER', 'ACCOUNTANT', 'DEPARTMENT_MANAGER', 'TEAM_LEAD', 'EMPLOYEE']} element={<PerformanceCyclesPage />} />} />
-          <Route path="performance/objectives"        element={<ProtectedRoute roles={['PLATFORM_SUPER_ADMIN', 'ENTERPRISE_ADMIN', 'BRANCH_ADMIN', 'HR_MANAGER', 'DEPARTMENT_MANAGER', 'TEAM_LEAD', 'EMPLOYEE']} element={<ObjectivesPage />} />} />
-          <Route path="performance/feedback"          element={<ProtectedRoute roles={['PLATFORM_SUPER_ADMIN', 'ENTERPRISE_ADMIN', 'BRANCH_ADMIN', 'HR_MANAGER', 'DEPARTMENT_MANAGER', 'TEAM_LEAD', 'EMPLOYEE']} element={<FeedbackPage />} />} />
-          <Route path="performance/anonymous-feedback" element={<ProtectedRoute roles={['PLATFORM_SUPER_ADMIN', 'ENTERPRISE_ADMIN', 'BRANCH_ADMIN', 'HR_MANAGER', 'DEPARTMENT_MANAGER', 'TEAM_LEAD', 'EMPLOYEE']} element={<AnonymousFeedbackPage />} />} />
-          <Route path="performance/question-templates" element={<ProtectedRoute roles={['PLATFORM_SUPER_ADMIN', 'ENTERPRISE_ADMIN', 'BRANCH_ADMIN', 'HR_MANAGER', 'DEPARTMENT_MANAGER']} element={<QuestionTemplatesPage />} />} />
-          <Route path="performance/bonus-settings"    element={<ProtectedRoute roles={['PLATFORM_SUPER_ADMIN', 'ENTERPRISE_ADMIN', 'BRANCH_ADMIN', 'HR_MANAGER', 'DEPARTMENT_MANAGER']} element={<BonusSettingsPage />} />} />
-          <Route path="performance/meetings"          element={<ProtectedRoute roles={['PLATFORM_SUPER_ADMIN', 'ENTERPRISE_ADMIN', 'BRANCH_ADMIN', 'HR_MANAGER', 'DEPARTMENT_MANAGER', 'TEAM_LEAD', 'EMPLOYEE']} element={<MeetingsPage />} />} />
+          <Route path="performance" element={<SmartPerformancePage />} />
+          <Route path="performance/library" element={<SmartPerformancePage screen="library" />} />
+          <Route path="performance/library/create" element={<SmartPerformancePage screen="library-create" />} />
+          <Route path="performance/library/history" element={<SmartPerformancePage screen="library-history" />} />
+          <Route path="performance/onboarding" element={<SmartPerformancePage screen="onboarding" />} />
+          <Route path="performance/settings" element={<SmartPerformancePage screen="settings" />} />
+          <Route path="performance/employees/:employeeId" element={<SmartPerformancePage screen="record" />} />
+          <Route path="performance/archive" element={<SmartPerformancePage screen="archive" />} />
+          <Route path="performance/*" element={<Navigate to="/performance" replace />} />
+          <Route path="carr/*" element={<PreviousPerformanceLink />} />
+
           <Route path="helpdesk"                 element={<HelpdeskPage />} />
           <Route path="help"                     element={<HelpCenterPage />} />
           <Route path="help/platform"            element={<PlatformSupportPage />} />

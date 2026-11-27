@@ -4,9 +4,9 @@ import { useDispatch, useSelector } from 'react-redux'
 import { useForm } from 'react-hook-form'
 import toast from 'react-hot-toast'
 import {
-  fetchMyProfile, fetchMyLeave, fetchEssLeaveTypes, applyLeave,
+  fetchMyProfile, fetchMyLeave, fetchEssLeaveTypes, fetchMyBalance, applyLeave,
   fetchMyAttendance, fetchClockStatus, checkIn, checkOut, fetchMyPayslips,
-  selectEssProfile, selectEssLeaveRequests, selectEssLeaveTypes,
+  selectEssProfile, selectEssLeaveRequests, selectEssLeaveTypes, selectEssLeaveBalance,
   selectEssAttendance, selectEssClockStatus, selectEssPayslips, selectEssLoading,
 } from './essSlice'
 import Badge from '../../components/common/Badge'
@@ -383,7 +383,7 @@ export default function ESSPage() {
       </div>
 
       {/* Tabs */}
-      <div className="flex gap-1 bg-gray-100 rounded-xl p-1 w-fit">
+      <div className="flex w-fit max-w-full flex-wrap gap-1 rounded-xl bg-gray-100 p-1">
         {TABS.map(tab => (
           <button key={tab} onClick={() => setActiveTab(tab)}
             className={`px-4 py-2 text-sm font-medium rounded-lg transition-colors ${
@@ -395,7 +395,7 @@ export default function ESSPage() {
       </div>
 
       {/* Content */}
-      <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-6">
+      <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-4 sm:p-6">
         {loading && activeTab === 'Profile' && !profile ? (
           <div className="flex justify-center py-12">
             <div className="w-8 h-8 border-4 border-indigo-200 border-t-indigo-600 rounded-full animate-spin" />

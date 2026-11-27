@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useDispatch, useSelector } from 'react-redux'
 import { useForm } from 'react-hook-form'
@@ -16,7 +16,7 @@ import Button from '../../components/common/Button'
 import DataTable from '../../components/common/DataTable'
 import Badge from '../../components/common/Badge'
 import Modal from '../../components/common/Modal'
-import { formatDate } from '../../utils/formatters'
+import { formatAttendanceTime, formatDate } from '../../utils/formatters'
 import api from '../../services/api'
 import useTeamRegularisation from './useTeamRegularisation'
 
@@ -43,43 +43,6 @@ const STATUS_LABELS = {
   PENDING:  'Pending Approval',
   APPROVED: 'Approved',
   REJECTED: 'Rejected',
-}
-
-function RemarksModal({ open, onClose, onConfirm, title, loading, required = false }) {
-  const [remarks, setRemarks] = useState('')
-  const [error, setError] = useState('')
-
-  const confirm = () => {
-    if (required && !remarks.trim()) {
-      setError('Rejection reason is required')
-      return
-    }
-    onConfirm(remarks.trim())
-  }
-
-  return (
-    <Modal open={open} onClose={onClose} title={title}
-      footer={
-        <div className="flex justify-end gap-2">
-          <Button variant="secondary" onClick={onClose}>Cancel</Button>
-          <Button onClick={confirm} loading={loading}>Confirm</Button>
-        </div>
-      }>
-      <div>
-        <label className="block text-sm font-medium text-gray-700 mb-1">
-          Remarks {required ? <span className="text-red-500">*</span> : <span className="text-gray-400 font-normal">(optional)</span>}
-        </label>
-        <textarea
-          value={remarks}
-          onChange={e => { setRemarks(e.target.value); setError('') }}
-          rows={3}
-          className={`w-full border rounded px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-indigo-500 ${error ? 'border-red-500' : 'border-gray-300'}`}
-          placeholder={required ? 'Enter the rejection reason...' : 'Enter remarks...'}
-        />
-        {error && <span className="text-red-500 text-xs mt-1 block">{error}</span>}
-      </div>
-    </Modal>
-  )
 }
 
 export default function AttendanceRegularisationPage() {
@@ -111,7 +74,11 @@ function RegularisationWorkspace() {
   ]
   const [tab, setTab] = useState('My Requests')
   const [submitOpen, setSubmitOpen] = useState(false)
-  const [remarksModal, setRemarksModal] = useState({ open: false, id: null, action: null })
+  const [selectedApprovalId, setSelectedApprovalId] = useState(null)
+  const [approvalSearch, setApprovalSearch] = useState('')
+  const [reviewRemarks, setReviewRemarks] = useState('')
+  const [reviewError, setReviewError] = useState('')
+  const [reviewing, setReviewing] = useState(false)
   const { register, handleSubmit, watch, reset, formState: { errors } } = useForm()
   const selectedType = watch('requestType')
 
@@ -142,18 +109,41 @@ function RegularisationWorkspace() {
     } catch (e) { toast.error(e || 'Failed to submit') }
   }
 
-  const handleAction = (id, action) => {
-    setRemarksModal({ open: true, id, action, team: tab === 'Team Approvals' })
+  const approvalQueue = tab === 'Team Approvals' ? team.pending : pendingApproval
+  const visibleApprovalQueue = useMemo(() => {
+    const query = approvalSearch.trim().toLowerCase()
+    if (!query) return approvalQueue
+    return approvalQueue.filter(request => [request.employeeName, request.employeeBadgeId, request.employeeId, request.requestType, request.reason, request.attendanceDate]
+      .some(value => String(value || '').toLowerCase().includes(query)))
+  }, [approvalQueue, approvalSearch])
+  const selectedApproval = approvalQueue.find(request => String(request.id) === String(selectedApprovalId)) || null
+
+  const openApproval = (id) => {
+    setSelectedApprovalId(id)
+    setReviewRemarks('')
+    setReviewError('')
   }
 
-  const onConfirmRemarks = async (remarks) => {
-    const { id, action } = remarksModal
-    if (action === 'reject' && !remarks.trim()) {
-      toast.error('Rejection reason is required')
+  const closeApproval = () => {
+    setSelectedApprovalId(null)
+    setReviewRemarks('')
+    setReviewError('')
+  }
+
+  const reviewRequest = async (action) => {
+    if (!selectedApproval) return
+    const id = selectedApproval.id
+    const remarks = reviewRemarks.trim()
+    if (action === 'reject' && !remarks) {
+      setReviewError('Please enter a reason before rejecting this request.')
       return
     }
+    const currentIndex = visibleApprovalQueue.findIndex(request => request.id === id)
+    const nextRequest = [...visibleApprovalQueue.slice(currentIndex + 1), ...visibleApprovalQueue.slice(0, currentIndex)]
+      .find(request => request.id !== id)
+    setReviewing(true)
     try {
-      if (remarksModal.team) {
+      if (tab === 'Team Approvals') {
         await api.post(`/team/regularisation/${id}/${action}`, { remarks }, {
           headers: { 'X-Company-Id': companyId, 'X-Filter-Company-Id': companyId },
         })
@@ -161,9 +151,61 @@ function RegularisationWorkspace() {
       }
       else if (action === 'approve') await dispatch(approveRequest({ id, remarks })).unwrap()
       else if (action === 'reject') await dispatch(rejectRequest({ id, remarks })).unwrap()
-      toast.success('Done')
-      setRemarksModal({ open: false, id: null, action: null })
+      toast.success(action === 'approve' ? 'Request approved' : 'Request rejected')
+      setReviewRemarks('')
+      setReviewError('')
+      setSelectedApprovalId(nextRequest?.id ?? null)
     } catch (e) { toast.error(e?.response?.data?.message || (typeof e === 'string' ? e : 'Unable to review request')) }
+    finally { setReviewing(false) }
+  }
+
+  const requestTypeLabel = request => REQUEST_TYPES.find(type => type.value === request?.requestType)?.label || request?.requestType || '—'
+  const evidenceValue = value => value || 'Not provided'
+
+  const renderApprovalQueue = (isTeam = false) => {
+    const requests = visibleApprovalQueue
+    return (
+      <section className="rounded-xl border border-gray-200 bg-white overflow-hidden">
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 p-4 border-b border-gray-100">
+          <div>
+            <h2 className="font-semibold text-gray-900">Requests awaiting your review</h2>
+            <p className="mt-1 text-sm text-gray-500">Review each request, check the attendance details, then approve or reject it.</p>
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="rounded-full bg-amber-50 px-3 py-1 text-sm font-semibold text-amber-700">{isTeam ? team.pending.length : pendingApproval.length} pending</span>
+            <Button variant="secondary" size="sm" onClick={isTeam ? team.refresh : () => dispatch(fetchPendingApproval(companyId))}>Refresh</Button>
+          </div>
+        </div>
+        <div className="p-4 border-b border-gray-100">
+          <label className="block text-sm font-medium text-gray-700 mb-1" htmlFor="regularisation-approval-search">Find a request</label>
+          <input id="regularisation-approval-search" value={approvalSearch} onChange={event => setApprovalSearch(event.target.value)}
+            placeholder="Search employee, date, request type or reason"
+            className="w-full sm:max-w-xl rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" />
+        </div>
+        {loading || (isTeam && team.loading) ? <div className="p-10 text-center text-sm text-gray-500">Loading requests…</div> : requests.length === 0 ? (
+          <div className="p-10 text-center">
+            <p className="font-medium text-gray-700">{approvalSearch ? 'No matching requests' : 'You’re all caught up'}</p>
+            <p className="mt-1 text-sm text-gray-500">{approvalSearch ? 'Try another name, date or request type.' : 'There are no attendance requests waiting for your review.'}</p>
+          </div>
+        ) : (
+          <div className="divide-y divide-gray-100">
+            {requests.map(request => (
+              <article key={request.id} className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-4 hover:bg-gray-50">
+                <div className="min-w-0">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <h3 className="font-semibold text-gray-900">{request.employeeName || `Employee ${request.employeeId || ''}`}</h3>
+                    <Badge label={requestTypeLabel(request)} variant="info" />
+                  </div>
+                  <p className="mt-1 text-sm text-gray-600">{formatDate(request.attendanceDate)} <span className="text-gray-300">·</span> Submitted {request.createdAt ? formatDate(request.createdAt) : '—'}</p>
+                  <p className="mt-2 text-sm text-gray-500 line-clamp-2">{request.reason || 'No reason provided'}</p>
+                </div>
+                <Button size="sm" onClick={() => openApproval(request.id)}>Review request</Button>
+              </article>
+            ))}
+          </div>
+        )}
+      </section>
+    )
   }
 
   const baseColumns = [
@@ -180,25 +222,6 @@ function RegularisationWorkspace() {
       const s = row.original.status
       return <Badge label={STATUS_LABELS[s] || s} variant={STATUS_COLORS[s] || 'default'} />
     }},
-  ]
-
-  const approvalActionColumns = [
-    ...baseColumns,
-    { id: 'attendanceEvidence', header: 'Overtime details', cell: ({ row }) => {
-      const request = row.original
-      if (request.requestType !== 'OVERTIME_REQUEST') return '—'
-      return <div className="text-xs text-gray-700">
-        <div className="font-semibold">{request.requestedOvertimeHours} h requested</div>
-        <div>{request.shiftName || 'No shift specified'}</div>
-        <div>{request.recordedCheckIn || 'No check-in'} → {request.recordedCheckOut || 'No check-out'}</div>
-      </div>
-    }},
-    { id: 'actions', header: '', cell: ({ row }) => (
-      <div className="flex gap-2">
-        <Button size="sm" variant="success" onClick={() => handleAction(row.original.id, 'approve')}>Approve</Button>
-        <Button size="sm" variant="danger" onClick={() => handleAction(row.original.id, 'reject')}>Reject</Button>
-      </div>
-    )},
   ]
 
   const myColumns = [
@@ -247,7 +270,7 @@ function RegularisationWorkspace() {
 
       <div className="flex gap-2 border-b border-gray-200 mb-4">
         {tabs.map(t => (
-          <button key={t} onClick={() => setTab(t)}
+          <button key={t} onClick={() => { closeApproval(); setTab(t) }}
             className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${tab === t ? 'border-indigo-600 text-indigo-600' : 'border-transparent text-gray-500 hover:text-gray-700'}`}>
             {t}
             {t === 'Pending Approval' && pendingApproval.length > 0 && (
@@ -275,16 +298,13 @@ function RegularisationWorkspace() {
       )}
 
       {tab === 'Pending Approval' && (
-        <DataTable columns={approvalActionColumns} data={pendingApproval} loading={loading} />
+        renderApprovalQueue()
       )}
 
       {tab === 'Team Approvals' && team.available && (
         <>
-          <div className="flex justify-between items-center mb-3 text-sm text-gray-600">
-            <span>Attendance requests from your {team.members.length} direct reports only</span>
-            <Button variant="secondary" size="sm" onClick={team.refresh}>Refresh</Button>
-          </div>
-          <DataTable columns={approvalActionColumns} data={team.pending} loading={team.loading || loading} />
+          <p className="mb-3 text-sm text-gray-600">Showing attendance requests from your {team.members.length} direct reports.</p>
+          {renderApprovalQueue(true)}
         </>
       )}
 
@@ -402,17 +422,85 @@ function RegularisationWorkspace() {
         </div>
       </Modal>
 
-      {/* Approve / Reject with remarks modal */}
-      <RemarksModal key={`${remarksModal.open}:${remarksModal.id}:${remarksModal.action}`}
-        open={remarksModal.open}
-        onClose={() => setRemarksModal({ open: false, id: null, action: null })}
-        onConfirm={onConfirmRemarks}
-        title={
-          remarksModal.action?.includes('approve') ? 'Approve Request' : 'Reject Request'
-        }
-        loading={loading}
-        required={remarksModal.action?.includes('reject')}
-      />
+      {/* One request at a time, with the full context needed to review it. */}
+      <Modal open={!!selectedApproval} onClose={closeApproval} title="Review attendance request" size="lg">
+        {selectedApproval && (() => {
+          const currentIndex = visibleApprovalQueue.findIndex(request => request.id === selectedApproval.id)
+          const previous = visibleApprovalQueue[currentIndex - 1]
+          const next = visibleApprovalQueue[currentIndex + 1]
+          const detail = (label, value) => (
+            <div className="rounded-lg bg-gray-50 px-3 py-2.5">
+              <dt className="text-xs font-medium uppercase tracking-wide text-gray-500">{label}</dt>
+              <dd className="mt-1 text-sm text-gray-900 break-words">{value || '—'}</dd>
+            </div>
+          )
+          return (
+            <div className="space-y-5">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <p className="font-semibold text-gray-900">{selectedApproval.employeeName || `Employee ${selectedApproval.employeeId || ''}`}</p>
+                  <p className="mt-1 text-sm text-gray-600">{formatDate(selectedApproval.attendanceDate)} · {requestTypeLabel(selectedApproval)}</p>
+                </div>
+                <Badge label={STATUS_LABELS[selectedApproval.status] || selectedApproval.status || 'Pending'} variant={STATUS_COLORS[selectedApproval.status] || 'default'} />
+              </div>
+
+              {visibleApprovalQueue.length > 1 && (
+                <div className="flex items-center justify-between border-y border-gray-100 py-2">
+                  <Button size="sm" variant="secondary" disabled={!previous} onClick={() => openApproval(previous.id)}>← Previous</Button>
+                  <span className="text-sm text-gray-500">Request {currentIndex + 1} of {visibleApprovalQueue.length}</span>
+                  <Button size="sm" variant="secondary" disabled={!next} onClick={() => openApproval(next.id)}>Next →</Button>
+                </div>
+              )}
+
+              <section>
+                <h3 className="mb-2 text-sm font-semibold text-gray-800">Request details</h3>
+                <dl className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  {detail('Attendance date', formatDate(selectedApproval.attendanceDate))}
+                  {detail('Request type', requestTypeLabel(selectedApproval))}
+                  {detail('Recorded check-in', formatAttendanceTime(selectedApproval.recordedCheckIn, selectedApproval.recordedCheckInUtc))}
+                  {detail('Requested check-in', formatAttendanceTime(selectedApproval.requestedCheckIn, selectedApproval.requestedCheckInUtc))}
+                  {detail('Recorded check-out', formatAttendanceTime(selectedApproval.recordedCheckOut, selectedApproval.recordedCheckOutUtc))}
+                  {detail('Requested check-out', formatAttendanceTime(selectedApproval.requestedCheckOut, selectedApproval.requestedCheckOutUtc))}
+                  {selectedApproval.requestedOvertimeHours != null && detail('Overtime requested', `${selectedApproval.requestedOvertimeHours} hours`)}
+                  {selectedApproval.shiftName && detail('Shift', selectedApproval.shiftName)}
+                </dl>
+              </section>
+
+              <section className="space-y-3">
+                <div>
+                  <h3 className="text-sm font-semibold text-gray-800">Employee’s reason</h3>
+                  <p className="mt-1 whitespace-pre-wrap rounded-lg border border-gray-200 p-3 text-sm leading-6 text-gray-700">{evidenceValue(selectedApproval.reason)}</p>
+                </div>
+                {selectedApproval.attachmentUrl && (
+                  <a className="inline-flex text-sm font-medium text-indigo-600 hover:underline" href={selectedApproval.attachmentUrl} target="_blank" rel="noreferrer">View attachment ↗</a>
+                )}
+                {(selectedApproval.managerRemarks || selectedApproval.hrRemarks) && (
+                  <div className="rounded-lg border border-blue-100 bg-blue-50 p-3 text-sm text-blue-900">
+                    <span className="font-medium">Previous review note: </span>{selectedApproval.hrRemarks || selectedApproval.managerRemarks}
+                  </div>
+                )}
+              </section>
+
+              <div>
+                <label htmlFor="regularisation-review-remarks" className="mb-1 block text-sm font-medium text-gray-700">Reviewer remarks <span className="font-normal text-gray-400">(optional for approval, required for rejection)</span></label>
+                <textarea id="regularisation-review-remarks" value={reviewRemarks}
+                  onChange={event => { setReviewRemarks(event.target.value); setReviewError('') }} rows={3}
+                  className={`w-full rounded-lg border px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 ${reviewError ? 'border-red-500' : 'border-gray-300'}`}
+                  placeholder="Add a note for the employee…" />
+                {reviewError && <p role="alert" className="mt-1 text-sm text-red-600">{reviewError}</p>}
+              </div>
+
+              <div className="flex flex-col-reverse sm:flex-row sm:items-center sm:justify-between gap-2 border-t border-gray-100 pt-4">
+                <Button variant="secondary" onClick={closeApproval}>Close review</Button>
+                <div className="flex flex-col-reverse sm:flex-row gap-2">
+                  <Button variant="danger" disabled={loading || reviewing} onClick={() => reviewRequest('reject')}>Reject request</Button>
+                  <Button variant="success" loading={loading || reviewing} onClick={() => reviewRequest('approve')}>Approve request</Button>
+                </div>
+              </div>
+            </div>
+          )
+        })()}
+      </Modal>
     </div>
   )
 }

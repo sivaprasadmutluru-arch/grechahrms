@@ -159,7 +159,7 @@ export default function ObjectivesPage() {
       />
 
       {/* Summary Stats */}
-      <div className="grid grid-cols-3 gap-4 mb-4">
+      <div className="mb-4 grid grid-cols-2 gap-3 sm:grid-cols-3 sm:gap-4">
         <div className="bg-white rounded-lg border p-4">
           <p className="text-xs text-gray-500 uppercase tracking-wide">Avg Progress</p>
           <p className="text-2xl font-bold text-indigo-600 mt-1">{avgProgress}%</p>
@@ -175,7 +175,7 @@ export default function ObjectivesPage() {
       </div>
 
       {/* Filters */}
-      <div className="flex gap-3 mb-4">
+      <div className="mb-4 flex flex-wrap gap-3">
         <input
           className="border rounded px-3 py-1.5 text-sm w-56"
           placeholder="Search employee or title..."

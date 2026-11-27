@@ -86,6 +86,7 @@ export default function CompanySwitcher() {
       {({ open }) => (
         <>
           <MenuButton
+            aria-label="Switch company"
             disabled={scopeValidating}
             className="flex items-center gap-1.5 pl-2.5 pr-2 py-1.5 rounded-lg border border-gray-200 bg-white hover:bg-gray-50 transition-colors text-sm font-medium text-gray-700 disabled:opacity-60 disabled:cursor-not-allowed focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 focus-visible:ring-offset-1"
           >
@@ -95,7 +96,7 @@ export default function CompanySwitcher() {
                   ? <img src={selectedCompany.logoUrl} alt="" className="h-4 w-4 rounded object-cover" onError={() => setSelectedLogoLoadError(true)} />
                   : <BuildingOffice2Icon className="h-4 w-4 text-gray-500" />)
             }
-            <span className="max-w-[8.5rem] truncate">
+            <span className="hidden max-w-[8.5rem] truncate sm:block">
               {selectedCompany?.name || (canViewAllAssignedCompanies ? 'All Companies' : user?.companyName || 'Select Company')}
             </span>
             <ChevronDownIcon className={`h-3.5 w-3.5 text-gray-400 transition-transform ${open ? 'rotate-180' : ''}`} />
@@ -103,7 +104,7 @@ export default function CompanySwitcher() {
 
           <MenuItems
             anchor="bottom end"
-            className="w-72 origin-top-right rounded-xl border border-gray-200 bg-white shadow-lg ring-1 ring-black/5 focus:outline-none [--anchor-gap:6px]"
+            className="z-40 w-72 max-w-[calc(100dvw-1rem)] origin-top-right rounded-xl border border-gray-200 bg-white shadow-lg ring-1 ring-black/5 focus:outline-none [--anchor-gap:6px]"
           >
             {/* Search box (non-closeable on type) */}
             <div className="p-2 border-b border-gray-100">
@@ -113,7 +114,7 @@ export default function CompanySwitcher() {
                   value={search}
                   onChange={e => setSearch(e.target.value)}
                   placeholder="Search companies..."
-                  className="text-sm bg-transparent outline-none flex-1 text-gray-700 placeholder:text-gray-400"
+                  className="text-sm bg-transparent outline-none min-w-0 flex-1 text-gray-700 placeholder:text-gray-400"
                 />
                 {search && (
                   <button

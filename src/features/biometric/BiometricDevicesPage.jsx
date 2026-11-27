@@ -316,9 +316,9 @@ export default function BiometricDevicesPage() {
       </div>
 
       {/* Toolbar */}
-      <div className="flex flex-col sm:flex-row sm:items-center gap-3">
+      <div className="flex flex-wrap items-center gap-3">
         <SearchInput placeholder="Search by name, serial, or IP..." onSearch={setSearch} className="sm:max-w-xs" />
-        <div className="flex items-center gap-1.5 ml-auto">
+        <div className="flex min-w-0 flex-wrap items-center gap-1.5 lg:ml-auto">
           {['ALL', 'ZK', 'ANVIZ', 'COSEC', 'DAHUA', 'ETIMEOFFICE'].map((t) => (
             <button
               key={t}

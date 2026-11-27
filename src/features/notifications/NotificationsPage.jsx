@@ -47,11 +47,12 @@ const entityKey = (value) => String(value || '').replace(/[^a-z0-9]/gi, '').toUp
 
 // Maps notification payloads to the most specific route the current app supports.
 const RELATED_ENTITY_ROUTES = {
-  CARRAPPROVAL: (id) => `/carr/cars?record=${id}`,
-  CARRACKNOWLEDGEMENT: (id) => `/carr/cars?record=${id}`,
-  CARRCHANGES: (id) => `/carr/cars?record=${id}`,
-  CARRREVIEW: (id) => `/carr/cars?record=${id}`,
-  CARRWORKFLOWHISTORY: (id) => `/carr/cars?record=${id}`,
+  SMARTPERFORMANCE: (id) => `/performance/employees/${id}`,
+  CARRAPPROVAL: (id) => `/performance/archive?id=${id}`,
+  CARRACKNOWLEDGEMENT: (id) => `/performance/archive?id=${id}`,
+  CARRCHANGES: (id) => `/performance/archive?id=${id}`,
+  CARRREVIEW: (id) => `/performance/archive?id=${id}`,
+  CARRWORKFLOWHISTORY: (id) => `/performance/archive?id=${id}`,
   CHECKOUTREMINDER: () => '/dashboard',
   REGULARISATIONREQUEST: () => '/attendance/regularisation',
   ATTENDANCEREGULARISATION: () => '/attendance/regularisation',
